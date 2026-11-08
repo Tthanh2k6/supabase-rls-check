@@ -1,0 +1,4 @@
+rule,schema_name,object_name,policy_name
+rls_disabled,public,todos,
+policy_true,public,profiles,read_every_profile
+public_bucket,storage,todo-attachments,

@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "supabase-rls-check"
+version = "0.1.0"
+description = "Consent-gated, read-only RLS, policy, and anonymous exposure checks for Supabase projects."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+  { name = "Trung Thanh Tran" },
+]
+keywords = [
+  "supabase",
+  "postgresql",
+  "row-level-security",
+  "rls",
+  "postgrest",
+  "security",
+  "audit",
+  "mcp",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Database",
+  "Topic :: Security",
+]
+dependencies = [
+  "requests>=2.31,<3",
+]
+
+[project.optional-dependencies]
+mcp = [
+  "mcp>=1.2",
+]
+dev = [
+  "pytest>=7,<10",
+]
+
+[project.scripts]
+supabase-rls-check = "supabase_rls_check.cli:main"
+
+[tool.setuptools]
+packages = [
+  "supabase_rls_check",
+  "supabase_rls_check.sql",
+  "supabase_rls_check.assets",
+]
+
+[tool.setuptools.package-dir]
+"" = "src"
+"supabase_rls_check.assets" = "assets"
+
+[tool.setuptools.package-data]
+"supabase_rls_check.sql" = ["*.sql"]
+"supabase_rls_check.assets" = ["*.ttf", "*.txt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

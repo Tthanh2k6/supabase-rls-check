@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    name: pytest (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package and dev dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[dev]"
+
+      - name: Run unit tests
+        run: python -m pytest -q
+
+      - name: Smoke-test CLI entry point
+        run: supabase-rls-check explain rls_disabled > /dev/null
+
+  postgres-check-sql:
+    name: check.sql on PostgreSQL 15
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_USER: postgres
+          POSTGRES_DB: supabase_check
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d supabase_check"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package and psql client
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[dev]"
+          which psql || (sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client)
+
+      - name: Seed simulated Supabase catalog and run check.sql
+        run: |
+          psql -h 127.0.0.1 -U postgres -d supabase_check -v ON_ERROR_STOP=1 -f tests/fixtures/seed_pg.sql
+          psql -h 127.0.0.1 -U postgres -d supabase_check -v ON_ERROR_STOP=1 --csv -f src/supabase_rls_check/sql/check.sql > /tmp/pg_findings.csv
+          cat /tmp/pg_findings.csv
+
+      - name: Compare findings against expected catalog results and test CLI pipeline
+        run: |
+          python - <<'PY'
+          import csv
+          from pathlib import Path
+
+          def read_rows(path: str) -> list[tuple[str, str, str, str]]:
+              with Path(path).open(encoding="utf-8", newline="") as stream:
+                  reader = csv.DictReader(stream)
+                  assert reader.fieldnames == ["rule", "schema_name", "object_name", "policy_name"], reader.fieldnames
+                  return [
+                      (row["rule"], row["schema_name"], row["object_name"], row["policy_name"])
+                      for row in reader
+                  ]
+
+          actual = read_rows("/tmp/pg_findings.csv")
+          expected = [
+              ("definer_anon_exec", "public", "create_order(uuid)", ""),
+              ("definer_search_path", "public", "handle_new_user()", ""),
+              ("policy_true", "public", "profiles", "allow_everyone"),
+              ("public_bucket", "storage", "documents", ""),
+              ("public_extension", "public", "pg_trgm", ""),
+              ("rls_disabled", "public", "todos", ""),
+              ("sensitive_anon_policy", "public", "payments", "anon_payments"),
+              ("view_not_invoker", "public", "customer_summary", ""),
+          ]
+          assert actual == expected, f"Unexpected findings:\nactual={actual}\nexpected={expected}"
+          assert actual == sorted(read_rows("tests/fixtures/all_findings.csv"))
+          PY
+          supabase-rls-check sql --from /tmp/pg_findings.csv --out /tmp/sql_results.json --i-own-this-project
+          supabase-rls-check report --from /tmp/sql_results.json --out-dir /tmp/report_out --project "CI Postgres 15" --i-own-this-project
+          test -f /tmp/report_out/report.html
+          test -f /tmp/report_out/report.md
+          test -f /tmp/report_out/fix.sql

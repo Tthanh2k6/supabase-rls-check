@@ -1,0 +1,9 @@
+rule,schema_name,object_name,policy_name
+rls_disabled,public,todos,
+policy_true,public,profiles,allow_everyone
+sensitive_anon_policy,public,payments,anon_payments
+definer_search_path,public,handle_new_user(),
+view_not_invoker,public,customer_summary,
+public_bucket,storage,documents,
+public_extension,public,pg_trgm,
+definer_anon_exec,public,create_order(uuid),
