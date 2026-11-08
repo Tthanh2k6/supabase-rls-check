@@ -369,3 +369,26 @@ def test_backward_compatible_audit_supabase_wrapper():
 
     assert audit_supabase.main is audit.main
     assert audit_supabase.RULES is audit.RULES
+
+
+def test_probe_anon_key_from_env(monkeypatch, tmp_path):
+    from supabase_rls_check import cli
+    seen = {}
+
+    def fake_probe(url, key, tables, site):
+        seen['key'] = key
+        return {'findings': [], 'notes': [], 'observations': []}
+
+    monkeypatch.setattr(cli, 'probe', fake_probe)
+    monkeypatch.setenv('SUPABASE_ANON_KEY', 'sb_publishable_test')
+    out = tmp_path / 'p.json'
+    cli.main(['probe', '--url', 'https://abc.supabase.co', '--tables', 'notes', '--out', str(out), '--i-own-this-project'])
+    assert seen['key'] == 'sb_publishable_test'
+
+
+def test_probe_without_any_key_fails(monkeypatch):
+    import pytest
+    from supabase_rls_check import cli
+    monkeypatch.delenv('SUPABASE_ANON_KEY', raising=False)
+    with pytest.raises(SystemExit):
+        cli.main(['probe', '--url', 'https://abc.supabase.co', '--i-own-this-project'])

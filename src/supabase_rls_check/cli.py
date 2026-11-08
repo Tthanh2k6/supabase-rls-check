@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Sequence
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -63,7 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
         help='Run read-only GET/HEAD checks with an anon/publishable key',
     )
     probe_parser.add_argument('--url', required=True, help='Project HTTPS origin (e.g. https://project.supabase.co)')
-    probe_parser.add_argument('--anon-key', required=True, help='Public anon JWT or sb_publishable_ key')
+    probe_parser.add_argument('--anon-key', help='Public anon JWT or sb_publishable_ key (or set SUPABASE_ANON_KEY to keep it out of shell history)')
     probe_parser.add_argument('--tables', nargs='*', default=[], help='Known table/view names when OpenAPI is disabled')
     probe_parser.add_argument('--site', help='Authorized frontend HTTPS URL to check for exposed service_role JWTs')
     probe_parser.add_argument('--out', default='probe_results.json', help='Output JSON path (default: probe_results.json)')
@@ -130,7 +131,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = load_result(args.source)
             Path(args.out).write_text(json.dumps(result, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
         else:
-            result = probe(args.url, args.anon_key, args.tables, args.site)
+            anon_key = args.anon_key or os.environ.get('SUPABASE_ANON_KEY')
+            if not anon_key:
+                parser.error('Provide --anon-key or set SUPABASE_ANON_KEY')
+            result = probe(args.url, anon_key, args.tables, args.site)
             Path(args.out).write_text(json.dumps(result, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
     except (OSError, ValueError, KeyError, TypeError, requests.RequestException):
         print(

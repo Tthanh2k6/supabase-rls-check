@@ -15,3 +15,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `explain <rule>` command with severity, context, caveats, and remediation examples for every rule.
 - Optional stdio MCP server (`supabase-rls-check mcp` via `supabase-rls-check[mcp]`) exposing `analyze_sql_export` and `explain_rule` while excluding network probing.
 - Offline unit test suite and GitHub Actions CI across Python 3.11, Python 3.12, and live `postgres:15` catalog verification.
+
+## 0.1.1 - 2026-11-09
+- `probe` reads the anon key from `SUPABASE_ANON_KEY` when `--anon-key` is omitted.
