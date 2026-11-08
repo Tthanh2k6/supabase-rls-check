@@ -131,6 +131,12 @@ When `probe` is run, two runtime checks complement the SQL catalog export:
 - `anon_readable` (**High**) — PostgREST returned visible rows for an unauthenticated `GET`/`HEAD` request using the `anon` or publishable key (records column names and visible row count only).
 - `service_role_exposed` (**Critical**) — A JWT whose payload decodes to `role = "service_role"` was found in frontend HTML or a directly linked same-origin script.
 
+## How it is tested
+
+- **52 unit tests** (`pytest`): consent flag enforcement, GET/HEAD-only probing with no redirects, response size limits, row values and keys never written to disk, `service_role` JWT detection, HTML/SQL escaping in reports, identifier quoting in `fix.sql`, English and Vietnamese output, and the MCP tool surface (no `probe` exposed).
+- **Catalog query on a real PostgreSQL 15** (GitHub Actions): `tests/fixtures/seed_pg.sql` creates one deliberate mistake per rule next to safe look-alikes (RLS enabled, `security_invoker` view, definer function with a fixed `search_path` and revoked `EXECUTE`). CI checks that all 8 mistakes are reported and none of the safe objects are.
+- **Abuse cases checked by hand**: running any command without `--i-own-this-project` exits before touching the network; passing a `service_role` key to `probe` is refused; the MCP server cannot reach the network.
+
 ## Ethical boundaries
 
 - **Authorization required**: Only scan projects you own or have explicit **written authorization** to test, including any `--site` frontend domain. Commands that process project exports or targets require `--i-own-this-project` or `--have-written-consent`.
