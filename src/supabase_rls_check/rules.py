@@ -66,6 +66,27 @@ RULES: dict[str, tuple[str, str, str, str, str]] = {
         'Extension cài trong public',
         'Rà khả năng di chuyển và phụ thuộc trước khi chuyển sang schema extensions.',
     ),
+    'policy_user_metadata': (
+        'High',
+        'Policy trusts user-editable JWT metadata',
+        'Use server-managed app_metadata or an authorization table that users cannot write to.',
+        'Policy phân quyền dựa trên metadata người dùng có thể tự sửa',
+        'Dùng app_metadata do máy chủ quản lý hoặc bảng phân quyền mà người dùng không có quyền ghi.',
+    ),
+    'policy_auth_per_row': (
+        'Low',
+        'Policy evaluates authentication functions per row',
+        'Wrap row-independent calls in a sub-select, for example (select auth.uid()), and compare query plans.',
+        'Policy gọi hàm xác thực cho từng dòng',
+        'Bọc lời gọi không phụ thuộc vào dòng trong truy vấn con, ví dụ (select auth.uid()), rồi so sánh kế hoạch thực thi.',
+    ),
+    'auth_users_exposed': (
+        'Critical',
+        'Public view exposes auth.users',
+        'Drop the view or enable security_invoker on a regular view and revoke SELECT from anon/authenticated, including inherited grants. Expose only needed columns from a profiles table instead.',
+        'View trong schema public làm lộ bảng auth.users',
+        'Xóa view hoặc bật security_invoker cho view thường và thu hồi quyền SELECT của anon/authenticated, kể cả quyền kế thừa. Chỉ công khai các cột cần thiết từ bảng hồ sơ người dùng riêng.',
+    ),
     'anon_readable': (
         'High',
         'Rows readable without login',
@@ -91,6 +112,9 @@ SQL_RULES: tuple[str, ...] = (
     'view_not_invoker',
     'public_bucket',
     'public_extension',
+    'policy_user_metadata',
+    'policy_auth_per_row',
+    'auth_users_exposed',
 )
 
 SEVERITIES: list[str] = ['Critical', 'High', 'Medium', 'Low']
@@ -243,6 +267,65 @@ RULE_GUIDES: dict[str, dict[str, str]] = {
         'example': (
             'CREATE SCHEMA IF NOT EXISTS extensions;\n'
             'ALTER EXTENSION pg_trgm SET SCHEMA extensions;'
+        ),
+    },
+    'policy_user_metadata': {
+        'source': 'SQL catalog check (check.sql)',
+        'why': (
+            'A public policy reads user_metadata from auth.jwt() or request.jwt.claims. '
+            'End users can edit this metadata, so trusting its roles or permissions for authorization '
+            'can let them bypass the policy.'
+        ),
+        'caveat': (
+            'Expression matching is a heuristic, not a SQL parser or a proof of effective access. '
+            'Review USING and WITH CHECK, including any other predicates. app_metadata is server-managed, '
+            'but JWT claims may remain stale until the token is refreshed.'
+        ),
+        'example': (
+            '-- Review the full policy and keep existing ownership/tenant checks.\n'
+            '-- Use a server-managed claim, for example:\n'
+            "-- ((SELECT auth.jwt()) -> 'app_metadata' ->> 'role') = 'admin'\n"
+            '-- Or query a separate authorization table that end users cannot modify.'
+        ),
+    },
+    'policy_auth_per_row': {
+        'source': 'SQL catalog check (check.sql)',
+        'why': (
+            'An RLS-enabled public table has a policy with an unwrapped auth.uid(), auth.jwt(), '
+            'auth.role(), or current_setting() call. Evaluating these calls for every row can slow '
+            'queries on large tables. A scalar sub-select lets PostgreSQL evaluate a row-independent '
+            'call once per statement through an initPlan. This is a performance finding, not a vulnerability.'
+        ),
+        'caveat': (
+            'The check recognizes directly SELECT-wrapped calls in deparsed policy expressions; '
+            'more complex subqueries may require manual review. Only cache calls whose arguments '
+            'and results do not depend on the current row. Compare EXPLAIN plans and timings.'
+        ),
+        'example': (
+            '-- In both USING and WITH CHECK, replace auth.uid() = user_id with:\n'
+            '-- (select auth.uid()) = user_id\n'
+            '-- Apply the same pattern to row-independent auth.jwt(), auth.role(), and current_setting().'
+        ),
+    },
+    'auth_users_exposed': {
+        'source': 'SQL catalog check (check.sql)',
+        'why': (
+            'A public view or materialized view directly depends on auth.users and anon or authenticated '
+            'has SELECT privileges. A regular view without security_invoker can expose Auth data with '
+            'owner privileges; a materialized view exposes its stored snapshot.'
+        ),
+        'caveat': (
+            'Review the selected columns and effective grants, including PUBLIC and inherited roles. '
+            'Materialized views cannot be hardened with security_invoker. This check follows direct '
+            'catalog dependencies, not chains of views; an unflagged view is not proof of safety.'
+        ),
+        'example': (
+            '-- Drop the exposed view if it is not required. For a regular view retained after review:\n'
+            '-- ALTER VIEW public.your_view SET (security_invoker = true);\n'
+            '-- REVOKE SELECT ON public.your_view FROM PUBLIC, anon, authenticated;\n'
+            '-- Also remove inherited access where necessary.\n'
+            '-- For materialized views, revoke access or drop the materialized view.\n'
+            '-- Publish only needed profile columns from a separate table with appropriate RLS.'
         ),
     },
     'anon_readable': {

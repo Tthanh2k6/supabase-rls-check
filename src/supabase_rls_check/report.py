@@ -58,6 +58,12 @@ def fix_sql(findings: Sequence[dict[str, Any]], lang: str = 'en') -> str:
             '--   USING ((SELECT auth.uid()) = user_id)',
             '--   WITH CHECK ((SELECT auth.uid()) = user_id);',
         ]
+    for f in findings:
+        if f['rule'] in ('policy_user_metadata', 'policy_auth_per_row', 'auth_users_exposed'):
+            target = clean(f['schema_name']) + '.' + clean(f['object_name'])
+            policy = ': ' + clean(f['policy_name']) if f['policy_name'] else ''
+            remedy = RULES[f['rule']][4 if lang == 'vi' else 2]
+            lines += [f"-- {f['rule']}: {target}{policy}", f'-- {remedy}']
     lines += [
         '-- Review every other finding manually; do not infer fixes from names alone.',
         '-- Owner: self-check write access using SQL on staging, including two-user isolation.',

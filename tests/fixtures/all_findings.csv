@@ -7,3 +7,14 @@ view_not_invoker,public,customer_summary,
 public_bucket,storage,documents,
 public_extension,public,pg_trgm,
 definer_anon_exec,public,create_order(uuid),
+policy_user_metadata,public,notes,metadata_jwt
+policy_user_metadata,public,notes,metadata_claims
+policy_auth_per_row,public,notes,per_row_uid
+policy_auth_per_row,public,notes,per_row_jwt
+policy_auth_per_row,public,notes,per_row_role
+policy_auth_per_row,public,notes,per_row_setting
+policy_auth_per_row,public,notes,mixed_auth_calls
+auth_users_exposed,public,auth_directory,
+auth_users_exposed,public,auth_snapshot,
+view_not_invoker,public,auth_directory,
+view_not_invoker,public,private_auth_directory,

@@ -1,7 +1,7 @@
 """Consent-gated, read-only Supabase RLS, policy, and anonymous exposure checks."""
 from __future__ import annotations
 
-__version__ = '0.1.1'
+__version__ = '0.2.0'
 
 from .cli import build_parser, main
 from .probe import Scripts, fetch, jwt_role, probe, scan_site, validate_url

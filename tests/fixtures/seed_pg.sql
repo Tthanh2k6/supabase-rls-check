@@ -1,6 +1,6 @@
 -- Seed fixture for PostgreSQL 15+ CI verification of src/supabase_rls_check/sql/check.sql.
--- Simulates Supabase roles + storage.buckets and plants one intentional misconfiguration
--- for each of the 8 catalog rules alongside hardened negative-control objects.
+-- Simulates Supabase roles, Auth, and storage.buckets; exercises all 11 catalog rules
+-- alongside hardened negative-control objects and mixed policy expressions.
 
 BEGIN;
 
@@ -14,6 +14,13 @@ BEGIN
   END IF;
 END
 $$;
+
+-- Minimal Auth stubs: catalog checks inspect expressions without executing these functions.
+CREATE SCHEMA auth;
+CREATE TABLE auth.users (id uuid PRIMARY KEY, email text);
+CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$ SELECT NULL::uuid $$;
+CREATE FUNCTION auth.jwt() RETURNS jsonb LANGUAGE sql STABLE AS $$ SELECT '{}'::jsonb $$;
+CREATE FUNCTION auth.role() RETURNS text LANGUAGE sql STABLE AS $$ SELECT 'authenticated'::text $$;
 
 -- Mock Supabase Storage schema (rule: public_bucket + private control bucket)
 CREATE SCHEMA IF NOT EXISTS storage;
@@ -108,5 +115,61 @@ REVOKE ALL ON FUNCTION public.safe_admin_helper() FROM PUBLIC, anon;
 CREATE VIEW public.safe_summary
   WITH (security_invoker = true) AS
   SELECT id, title FROM public.todos;
+
+-- 9. policy_user_metadata: both JWT sources and both policy expression fields.
+-- Wrapping the helpers isolates this authorization issue from the performance rule.
+CREATE POLICY metadata_jwt ON public.notes FOR SELECT TO authenticated
+  USING (((SELECT auth.jwt()) -> 'user_metadata' ->> 'role') = 'admin');
+CREATE POLICY metadata_claims ON public.notes FOR INSERT TO authenticated
+  WITH CHECK (((SELECT current_setting('request.jwt.claims', true))::jsonb
+               -> 'user_metadata' ->> 'role') = 'admin');
+
+-- 10. policy_auth_per_row: every helper, WITH CHECK, mixed calls, and deduplication.
+CREATE POLICY per_row_uid ON public.notes FOR ALL TO authenticated
+  USING (auth.uid() = owner_id) WITH CHECK (auth.uid() = owner_id);
+CREATE POLICY per_row_jwt ON public.notes FOR INSERT TO authenticated
+  WITH CHECK ((auth.jwt() ->> 'sub') = owner_id::text);
+CREATE POLICY per_row_role ON public.notes FOR SELECT TO authenticated
+  USING (auth.role() = 'authenticated');
+CREATE POLICY per_row_setting ON public.notes FOR SELECT TO authenticated
+  USING (current_setting('request.jwt.claims', true) IS NOT NULL);
+CREATE POLICY mixed_auth_calls ON public.notes FOR SELECT TO authenticated
+  USING ((SELECT auth.uid()) = owner_id AND auth.role() = 'authenticated');
+
+-- Negative controls: server-managed metadata, wrapped helpers, and function-like strings.
+CREATE POLICY metadata_app ON public.notes FOR ALL TO authenticated
+  USING (((SELECT auth.jwt()) -> 'app_metadata' ->> 'role') = 'admin')
+  WITH CHECK (((SELECT current_setting('request.jwt.claims', true))::jsonb
+               -> 'app_metadata' ->> 'role') = 'admin');
+CREATE POLICY wrapped_auth_calls ON public.notes FOR ALL TO authenticated
+  USING ((SELECT auth.uid()) = owner_id AND (SELECT auth.role()) = 'authenticated')
+  WITH CHECK (((SELECT auth.jwt()) ->> 'sub') = owner_id::text
+              AND (SELECT current_setting('request.jwt.claims', true)) IS NOT NULL);
+CREATE POLICY literal_auth_text ON public.notes FOR SELECT TO authenticated
+  USING (body <> 'auth.uid() auth.jwt() auth.role() current_setting(');
+CREATE POLICY unrelated_metadata_literal ON public.notes FOR SELECT TO authenticated
+  USING (((SELECT auth.jwt()) -> 'app_metadata' ->> 'role') = body AND body <> 'user_metadata');
+-- No performance finding when RLS is disabled (todos still has its original rls_disabled finding).
+CREATE POLICY inactive_auth_call ON public.todos FOR SELECT TO authenticated
+  USING (auth.uid() IS NOT NULL);
+
+-- 11. auth_users_exposed: SELECT via either API role, including a stored snapshot.
+-- Selecting two columns must still yield just one auth_users_exposed row per object.
+CREATE VIEW public.auth_directory AS SELECT id, email FROM auth.users;
+GRANT SELECT ON public.auth_directory TO anon;
+CREATE MATERIALIZED VIEW public.auth_snapshot AS SELECT id, email FROM auth.users;
+GRANT SELECT ON public.auth_snapshot TO authenticated;
+
+-- Negative controls independently exercise invoker and grant filtering.
+CREATE VIEW public.safe_auth_directory WITH (security_invoker = true)
+  AS SELECT id, email FROM auth.users;
+REVOKE ALL ON public.safe_auth_directory FROM PUBLIC, anon, authenticated;
+CREATE VIEW public.granted_invoker_directory WITH (security_invoker = true)
+  AS SELECT id FROM auth.users;
+GRANT SELECT ON public.granted_invoker_directory TO anon;
+CREATE VIEW public.private_auth_directory AS SELECT id FROM auth.users;
+REVOKE ALL ON public.private_auth_directory FROM PUBLIC, anon, authenticated;
+CREATE MATERIALIZED VIEW public.private_auth_snapshot AS SELECT id FROM auth.users;
+REVOKE ALL ON public.private_auth_snapshot FROM PUBLIC, anon, authenticated;
 
 COMMIT;

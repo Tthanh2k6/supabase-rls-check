@@ -1,7 +1,15 @@
 -- PostgreSQL 15+, Supabase SQL Editor. Read-only, one exportable result set.
 -- Export ALL rows as CSV or JSON. Only catalog metadata, never customer rows.
 -- Customize this sensitive-table heuristic for your application.
-WITH findings AS (
+WITH policy_expressions AS (
+  -- Keep USING and WITH CHECK separate so each expression is checked independently.
+  SELECT p.schemaname, p.tablename, p.policyname, c.relrowsecurity, e.expression
+  FROM pg_catalog.pg_policies p
+  JOIN pg_catalog.pg_namespace n ON n.nspname = p.schemaname
+  JOIN pg_catalog.pg_class c ON c.relnamespace = n.oid AND c.relname = p.tablename
+  CROSS JOIN LATERAL (VALUES (p.qual), (p.with_check)) e(expression)
+  WHERE p.schemaname = 'public' AND e.expression IS NOT NULL
+), findings AS (
   SELECT 'rls_disabled'::text AS rule, n.nspname::text AS schema_name,
          c.relname::text AS object_name, ''::text AS policy_name
   FROM pg_catalog.pg_class c
@@ -50,6 +58,49 @@ WITH findings AS (
   FROM pg_catalog.pg_extension e
   JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace
   WHERE n.nspname = 'public'
+  UNION ALL
+  SELECT DISTINCT 'policy_user_metadata', schemaname::text, tablename::text, policyname::text
+  FROM policy_expressions
+  -- Allow deparsed casts, parentheses and SELECT aliases between the JWT and its key.
+  -- Do not confuse a separate user_metadata literal with a key read from the JWT.
+  WHERE expression ~* $re$\m(auth[.]jwt[[:space:]]*\([[:space:]]*\)|(?:pg_catalog[.])?current_setting[[:space:]]*\([[:space:]]*'request[.]jwt[.]claims'[^)]*\))([[:space:]()]|::[[:space:]]*(jsonb?|text)|AS[[:space:]]+[[:alnum:]_]+)*(->>?|#>>?)[[:space:]]*'(user_metadata|\{user_metadata(,[^']*)?\})'$re$
+  UNION ALL
+  SELECT DISTINCT 'policy_auth_per_row', schemaname::text, tablename::text, policyname::text
+  FROM policy_expressions
+  WHERE relrowsecurity
+    -- Ignore strings, then remove each directly SELECT-wrapped call's prefix.
+    -- Check what remains: one wrapped call must not hide another unwrapped call.
+    AND regexp_replace(
+          regexp_replace(expression, $re$'(?:[^']|'')*'$re$, '', 'g'),
+          $re$\([[:space:]]*SELECT[[:space:]]+\(*[[:space:]]*(auth[.](uid|jwt|role)|(?:pg_catalog[.])?current_setting)[[:space:]]*\($re$,
+          '', 'gi'
+        ) ~* $re$\m(auth[.](uid|jwt|role)|(?:pg_catalog[.])?current_setting)[[:space:]]*\($re$
+  UNION ALL
+  SELECT 'auth_users_exposed', n.nspname::text, c.relname::text, ''
+  FROM pg_catalog.pg_class c
+  JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+  WHERE n.nspname = 'public' AND c.relkind IN ('v', 'm')
+    AND (c.relkind = 'm' OR NOT EXISTS (
+      SELECT 1 FROM unnest(c.reloptions) opt
+      WHERE opt IN ('security_invoker=true', 'security_invoker=on', 'security_invoker=1')
+    ))
+    AND EXISTS (
+      SELECT 1 FROM pg_catalog.pg_roles r
+      WHERE r.rolname IN ('anon', 'authenticated')
+        AND pg_catalog.has_table_privilege(r.oid, c.oid, 'SELECT')
+    )
+    AND EXISTS (
+      -- Resolve auth.users through catalogs: no failing regclass cast if auth is absent.
+      -- EXISTS also avoids duplicate findings for dependencies on multiple columns.
+      SELECT 1
+      FROM pg_catalog.pg_rewrite rw
+      JOIN pg_catalog.pg_depend d
+        ON d.classid = 'pg_catalog.pg_rewrite'::pg_catalog.regclass AND d.objid = rw.oid
+      JOIN pg_catalog.pg_class base
+        ON d.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass AND d.refobjid = base.oid
+      JOIN pg_catalog.pg_namespace bn ON bn.oid = base.relnamespace
+      WHERE rw.ev_class = c.oid AND bn.nspname = 'auth' AND base.relname = 'users'
+    )
 )
 SELECT rule, schema_name, object_name, policy_name FROM findings
 ORDER BY rule, schema_name, object_name, policy_name;

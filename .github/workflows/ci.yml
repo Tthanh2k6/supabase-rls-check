@@ -69,7 +69,7 @@ jobs:
       - name: Seed simulated Supabase catalog and run check.sql
         run: |
           psql -h 127.0.0.1 -U postgres -d supabase_check -v ON_ERROR_STOP=1 -f tests/fixtures/seed_pg.sql
-          psql -h 127.0.0.1 -U postgres -d supabase_check -v ON_ERROR_STOP=1 --csv -f src/supabase_rls_check/sql/check.sql > /tmp/pg_findings.csv
+          PGOPTIONS='-c default_transaction_read_only=on' psql -h 127.0.0.1 -U postgres -d supabase_check -v ON_ERROR_STOP=1 --csv -f src/supabase_rls_check/sql/check.sql > /tmp/pg_findings.csv
           cat /tmp/pg_findings.csv
 
       - name: Compare findings against expected catalog results and test CLI pipeline
@@ -89,14 +89,25 @@ jobs:
 
           actual = read_rows("/tmp/pg_findings.csv")
           expected = [
+              ("auth_users_exposed", "public", "auth_directory", ""),
+              ("auth_users_exposed", "public", "auth_snapshot", ""),
               ("definer_anon_exec", "public", "create_order(uuid)", ""),
               ("definer_search_path", "public", "handle_new_user()", ""),
+              ("policy_auth_per_row", "public", "notes", "mixed_auth_calls"),
+              ("policy_auth_per_row", "public", "notes", "per_row_jwt"),
+              ("policy_auth_per_row", "public", "notes", "per_row_role"),
+              ("policy_auth_per_row", "public", "notes", "per_row_setting"),
+              ("policy_auth_per_row", "public", "notes", "per_row_uid"),
               ("policy_true", "public", "profiles", "allow_everyone"),
+              ("policy_user_metadata", "public", "notes", "metadata_claims"),
+              ("policy_user_metadata", "public", "notes", "metadata_jwt"),
               ("public_bucket", "storage", "documents", ""),
               ("public_extension", "public", "pg_trgm", ""),
               ("rls_disabled", "public", "todos", ""),
               ("sensitive_anon_policy", "public", "payments", "anon_payments"),
+              ("view_not_invoker", "public", "auth_directory", ""),
               ("view_not_invoker", "public", "customer_summary", ""),
+              ("view_not_invoker", "public", "private_auth_directory", ""),
           ]
           assert actual == expected, f"Unexpected findings:\nactual={actual}\nexpected={expected}"
           assert actual == sorted(read_rows("tests/fixtures/all_findings.csv"))
@@ -106,3 +117,21 @@ jobs:
           test -f /tmp/report_out/report.html
           test -f /tmp/report_out/report.md
           test -f /tmp/report_out/fix.sql
+
+      - name: Check catalogs without auth schema or auth.users
+        run: |
+          psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE supabase_no_auth'
+          psql -h 127.0.0.1 -U postgres -d supabase_no_auth -v ON_ERROR_STOP=1 -c 'CREATE SCHEMA storage; CREATE TABLE storage.buckets (name text, public boolean)'
+          PGOPTIONS='-c default_transaction_read_only=on' psql -h 127.0.0.1 -U postgres -d supabase_no_auth -v ON_ERROR_STOP=1 --csv -f src/supabase_rls_check/sql/check.sql > /tmp/no_auth_findings.csv
+          psql -h 127.0.0.1 -U postgres -d supabase_no_auth -v ON_ERROR_STOP=1 -c 'CREATE SCHEMA auth'
+          PGOPTIONS='-c default_transaction_read_only=on' psql -h 127.0.0.1 -U postgres -d supabase_no_auth -v ON_ERROR_STOP=1 --csv -f src/supabase_rls_check/sql/check.sql > /tmp/no_users_findings.csv
+          python - <<'PY'
+          import csv
+          from pathlib import Path
+
+          for name in ('no_auth_findings.csv', 'no_users_findings.csv'):
+              with (Path('/tmp') / name).open(encoding='utf-8', newline='') as stream:
+                  reader = csv.DictReader(stream)
+                  assert reader.fieldnames == ['rule', 'schema_name', 'object_name', 'policy_name']
+                  assert list(reader) == [], name
+          PY

@@ -192,7 +192,7 @@ def test_report_merge_escape_and_fix(tmp_path, lang, label):
     assert '&lt;script&gt;' in markup
     assert '&lt;script&gt;' in markdown
     assert label in markup
-    assert markup.count('<tr>') == 10  # header + 9 deduplicated findings
+    assert markup.count('<tr>') == len(result['findings']) + 1  # header + deduplicated findings
     assert '"a""; DROP TABLE x;--<script>" ENABLE' in sql
     assert 'ROLLBACK;' in sql
     assert 'CHANGE user_id to the actual ownership column' in sql
@@ -313,8 +313,8 @@ def test_sql_print_bundled_check_query(capsys):
 
 def test_mcp_core_analyze_and_explain_without_sdk(tmp_path):
     summary = mcp_server.analyze_sql_export(str(FIXTURE))
-    assert summary['total_findings'] == 8
-    assert summary['counts'] == {'Critical': 0, 'High': 6, 'Medium': 1, 'Low': 1}
+    assert summary['total_findings'] == 19
+    assert summary['counts'] == {'Critical': 2, 'High': 10, 'Medium': 1, 'Low': 6}
     assert {item['rule'] for item in summary['findings']} == set(audit.SQL_RULES)
     assert 'ROLLBACK;' in summary['fix_sql']
 
@@ -392,3 +392,51 @@ def test_probe_without_any_key_fails(monkeypatch):
     monkeypatch.delenv('SUPABASE_ANON_KEY', raising=False)
     with pytest.raises(SystemExit):
         cli.main(['probe', '--url', 'https://abc.supabase.co', '--i-own-this-project'])
+
+
+@pytest.mark.parametrize('lang', ['en', 'vi'])
+@pytest.mark.parametrize('rule,severity', [
+    ('policy_user_metadata', 'High'),
+    ('policy_auth_per_row', 'Low'),
+    ('auth_users_exposed', 'Critical'),
+])
+def test_new_catalog_rule_reports_and_manual_fixes(tmp_path, lang, rule, severity):
+    item = audit.finding(rule, 'public', 'review_target', 'review_policy' if rule != 'auth_users_exposed' else '')
+    result = {'findings': [item], 'notes': [], 'observations': []}
+    audit.report([result], tmp_path, lang=lang)
+    title, remedy = audit.RULES[rule][3:5] if lang == 'vi' else audit.RULES[rule][1:3]
+    severity_label = audit.VI_SEVERITIES[audit.SEVERITIES.index(severity)] if lang == 'vi' else severity
+    for filename in ('report.md', 'report.html'):
+        content = (tmp_path / filename).read_text(encoding='utf-8')
+        assert rule in content
+        assert title in content
+        assert remedy in content
+        assert severity_label in content
+        assert 'public.review_target' in content
+        if item['policy_name']:
+            assert item['policy_name'] in content
+    sql = (tmp_path / 'fix.sql').read_text(encoding='utf-8')
+    assert f'-- {rule}: public.review_target' in sql
+    assert f'-- {remedy}' in sql
+    # These rules must never introduce executable fixes, even inside the rollback template.
+    statements = [line for line in sql.splitlines() if line and not line.startswith('--')]
+    assert statements == [
+        'BEGIN;',
+        'ROLLBACK; -- Deliberate dry run. Change to COMMIT only after review and staging tests.',
+    ]
+
+
+@pytest.mark.parametrize('rule,severity,explanation,remedy', [
+    ('policy_user_metadata', 'High', 'End users can edit', 'app_metadata'),
+    ('policy_auth_per_row', 'Low', 'not a vulnerability', '(select auth.uid())'),
+    ('auth_users_exposed', 'Critical', 'materialized view', 'revoke SELECT'),
+])
+def test_new_catalog_rule_explanations_and_mcp(rule, severity, explanation, remedy):
+    text = audit.explain_rule(rule)
+    assert f'Severity: {severity}' in text
+    assert explanation in text
+    assert remedy in text
+    assert mcp_server.explain_rule(rule) == text
+    vi_text = audit.explain_rule(rule, lang='vi')
+    assert audit.RULES[rule][3] in vi_text
+    assert audit.RULES[rule][4] in vi_text
