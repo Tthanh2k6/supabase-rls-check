@@ -12,14 +12,16 @@ During rapid prototyping, AI-assisted schema generation, or manual migrations, i
 
 Requires Python 3.11 or newer.
 
+Not on PyPI yet. Install from the GitHub release tag:
+
 ```bash
-pip install supabase-rls-check
+pipx install "git+https://github.com/Tthanh2k6/supabase-rls-check@v0.2.0"
 ```
 
 Optional Model Context Protocol (MCP) server support (`mcp>=1.2`):
 
 ```bash
-pip install "supabase-rls-check[mcp]"
+pipx install "supabase-rls-check[mcp] @ git+https://github.com/Tthanh2k6/supabase-rls-check@v0.2.0"
 ```
 
 From source for development:
