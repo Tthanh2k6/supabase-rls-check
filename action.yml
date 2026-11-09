@@ -17,7 +17,7 @@ inputs:
     required: false
     default: High
   version:
-    description: supabase-rls-check version to install from PyPI.
+    description: supabase-rls-check version to install from PyPI, or "local" to install from the action checkout.
     required: false
     default: 0.2.2
   report-dir:
@@ -58,8 +58,13 @@ runs:
       shell: bash
       env:
         VERSION: ${{ inputs.version }}
+        ACTION_PATH: ${{ github.action_path }}
       run: |
-        python -m pip install --quiet "supabase-rls-check==${VERSION}"
+        if [ "$VERSION" = "local" ]; then
+          python -m pip install --quiet "$ACTION_PATH"
+        else
+          python -m pip install --quiet "supabase-rls-check==${VERSION}"
+        fi
         if ! command -v psql >/dev/null; then
           sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends postgresql-client
         fi

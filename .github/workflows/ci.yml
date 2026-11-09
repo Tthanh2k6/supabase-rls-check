@@ -168,6 +168,7 @@ jobs:
           database-url: postgresql://postgres@127.0.0.1:5432/supabase_check
           i-own-this-project: "true"
           fail-on: none
+          version: local
 
       - name: Run the action (gate on Critical, expected to fail)
         id: gated
@@ -178,6 +179,7 @@ jobs:
           i-own-this-project: "true"
           fail-on: Critical
           report-dir: rls-report-gated
+          version: local
 
       - name: Check outputs
         env:
