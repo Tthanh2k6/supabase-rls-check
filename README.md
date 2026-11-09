@@ -162,6 +162,11 @@ This tool is a configuration and anonymous-read review aid, **not a penetration 
 - `--site` inspects only the entry HTML document and up to 20 directly linked same-origin HTTPS `<script src>` files. Dynamically imported chunks, source maps, split/obfuscated tokens, and non-JWT secret formats (`sb_secret_*`) are outside its coverage, and JWT signatures are not verified.
 - `fix.sql` is a starting template ending in `ROLLBACK;`. Adding a new permissive policy does not override existing broad permissive policies—always export existing policies/grants and test two-user isolation on staging before committing changes.
 
+## Use it from an AI coding agent
+
+- **Agent skill** (Claude Code, Cursor, Codex and other SKILL.md agents): [Supabase RLS Review on Agensi](https://www.agensi.io/skills/supabase-rls-review) walks the agent through the review, policy fixes and a two-user isolation test on staging.
+- **MCP server listing**: [supabase-rls-check on Glama](https://glama.ai/mcp/servers/Tthanh2k6/supabase-rls-check).
+
 ## Need a human review?
 
 Need a manual review of RLS policies, `SECURITY DEFINER` function bodies, and two-user staging isolation? Book a fixed-scope review here: https://contra.com/s/sFUXWqOZ-supabase-security-check-for-lovable-bolt-and-v0-apps
