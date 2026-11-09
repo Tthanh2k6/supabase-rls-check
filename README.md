@@ -1,5 +1,7 @@
 # supabase-rls-check
 
+<!-- mcp-name: io.github.Tthanh2k6/supabase-rls-check -->
+
 [![PyPI](https://img.shields.io/pypi/v/supabase-rls-check)](https://pypi.org/project/supabase-rls-check/) [![Glama MCP server](https://glama.ai/mcp/servers/Tthanh2k6/supabase-rls-check/badges/score.svg)](https://glama.ai/mcp/servers/Tthanh2k6/supabase-rls-check)
 
 Consent-gated, read-only configuration and anonymous-exposure checks for Supabase projects (PostgreSQL 15+, Python 3.11+). No database password or `service_role` key required.
@@ -99,6 +101,33 @@ supabase-rls-check mcp
 ```
 
 The MCP server exposes only two local, read-only tools: `analyze_sql_export(path)` and `explain_rule(rule)`. Network probing is intentionally excluded from MCP so AI clients never handle API keys or send HTTP requests through this tool.
+
+## Run it in CI (GitHub Action)
+
+The repository is also a composite GitHub Action. It runs the same read-only `check.sql` with `psql` (inside a `default_transaction_read_only` session), writes `report.md`, `report.html` and `fix.sql`, adds a summary table to the job page, and fails the job when a finding is at or above `fail-on`.
+
+Unlike the three-step flow above, this needs a Postgres connection string. Keep it in a repository secret and point it at a staging project or a read-only role.
+
+```yaml
+name: RLS check
+on: [pull_request]
+jobs:
+  rls:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: Tthanh2k6/supabase-rls-check@main
+        with:
+          database-url: ${{ secrets.STAGING_DATABASE_URL }}
+          i-own-this-project: "true"
+          fail-on: High        # Critical, High, Medium, Low or none
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rls-report
+          path: rls-report/
+```
+
+Outputs: `findings` (total) and `failing` (at or above `fail-on`). The action refuses to run unless `i-own-this-project` is `"true"`.
 
 ## Sample report and offline demo
 

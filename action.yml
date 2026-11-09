@@ -1,0 +1,94 @@
+name: Supabase RLS Check
+description: Read-only Supabase/Postgres RLS and policy checks in CI. Fails the job on findings at or above a chosen severity.
+author: Tthanh2k6
+branding:
+  icon: shield
+  color: green
+
+inputs:
+  database-url:
+    description: Postgres connection string for a database you own (pass it from a secret). Use a staging or read-only role where possible.
+    required: true
+  i-own-this-project:
+    description: Set to "true" to confirm you own the database or have written permission to check it. The action refuses to run otherwise.
+    required: true
+  fail-on:
+    description: "Lowest severity that fails the job (Critical, High, Medium, Low, or none)."
+    required: false
+    default: High
+  version:
+    description: supabase-rls-check version to install from PyPI.
+    required: false
+    default: 0.2.0
+  report-dir:
+    description: Directory for report.md, report.html and fix.sql.
+    required: false
+    default: rls-report
+  project:
+    description: Project title shown in the report.
+    required: false
+    default: ""
+
+outputs:
+  findings:
+    description: Total number of findings.
+    value: ${{ steps.gate.outputs.findings }}
+  failing:
+    description: Number of findings at or above fail-on.
+    value: ${{ steps.gate.outputs.failing }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check consent
+      shell: bash
+      env:
+        CONSENT: ${{ inputs.i-own-this-project }}
+      run: |
+        if [ "$CONSENT" != "true" ]; then
+          echo "::error::Set i-own-this-project: true only for databases you own or have written permission to check."
+          exit 1
+        fi
+
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install supabase-rls-check and psql
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        python -m pip install --quiet "supabase-rls-check==${VERSION}"
+        if ! command -v psql >/dev/null; then
+          sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends postgresql-client
+        fi
+
+    - name: Run read-only catalog query
+      shell: bash
+      env:
+        DATABASE_URL: ${{ inputs.database-url }}
+        REPORT_DIR: ${{ inputs.report-dir }}
+      run: |
+        mkdir -p "$REPORT_DIR"
+        supabase-rls-check sql --print-sql > "$RUNNER_TEMP/check.sql"
+        PGOPTIONS='-c default_transaction_read_only=on' \
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 --csv -f "$RUNNER_TEMP/check.sql" > "$REPORT_DIR/findings.csv"
+
+    - name: Build report
+      shell: bash
+      env:
+        REPORT_DIR: ${{ inputs.report-dir }}
+        PROJECT: ${{ inputs.project }}
+      run: |
+        supabase-rls-check sql --from "$REPORT_DIR/findings.csv" --out "$REPORT_DIR/results.json" --i-own-this-project
+        supabase-rls-check report --from "$REPORT_DIR/results.json" --out-dir "$REPORT_DIR" \
+          ${PROJECT:+--project "$PROJECT"} --i-own-this-project
+
+    - name: Apply severity gate
+      id: gate
+      shell: bash
+      env:
+        REPORT_DIR: ${{ inputs.report-dir }}
+        FAIL_ON: ${{ inputs.fail-on }}
+      run: python "${{ github.action_path }}/scripts/action_gate.py"

@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-11-10
+
+### Added
+- Composite GitHub Action (`action.yml`): runs the read-only `check.sql` with `psql`, writes the report, adds a job summary, and fails on findings at or above `fail-on`. Refuses to run unless `i-own-this-project: "true"`.
+- `server.json` and the `mcp-name` marker for the Official MCP Registry.
+
 ## [0.2.0] - 2026-11-09
 
 ### Added

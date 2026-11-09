@@ -135,3 +135,56 @@ jobs:
                   assert reader.fieldnames == ['rule', 'schema_name', 'object_name', 'policy_name']
                   assert list(reader) == [], name
           PY
+
+  github-action:
+    name: Composite action on PostgreSQL 15
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_USER: postgres
+          POSTGRES_DB: supabase_check
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d supabase_check"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Seed simulated Supabase catalog
+        run: |
+          which psql || (sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client)
+          psql -h 127.0.0.1 -U postgres -d supabase_check -v ON_ERROR_STOP=1 -f tests/fixtures/seed_pg.sql
+
+      - name: Run the action (report only)
+        id: report_only
+        uses: ./
+        with:
+          database-url: postgresql://postgres@127.0.0.1:5432/supabase_check
+          i-own-this-project: "true"
+          fail-on: none
+
+      - name: Run the action (gate on Critical, expected to fail)
+        id: gated
+        continue-on-error: true
+        uses: ./
+        with:
+          database-url: postgresql://postgres@127.0.0.1:5432/supabase_check
+          i-own-this-project: "true"
+          fail-on: Critical
+          report-dir: rls-report-gated
+
+      - name: Check outputs
+        env:
+          FINDINGS: ${{ steps.report_only.outputs.findings }}
+          GATED: ${{ steps.gated.outcome }}
+        run: |
+          test "$FINDINGS" -gt 0
+          test "$GATED" = "failure"
+          test -s rls-report/report.html
+          echo "findings=$FINDINGS gated=$GATED"
