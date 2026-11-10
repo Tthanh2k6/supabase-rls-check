@@ -117,7 +117,7 @@ If installed with `supabase-rls-check[mcp]`, start the local stdio MCP server:
 supabase-rls-check mcp
 ```
 
-The MCP server exposes only three local, read-only tools: `analyze_sql_export(path)`, `explain_rule(rule)`, and `scan_public_env(path)`. Network probing is intentionally excluded from MCP so AI clients never handle API keys or send HTTP requests through this tool.
+The MCP server exposes only four local, read-only tools: `analyze_sql_export(path)`, `explain_rule(rule)`, `scan_public_env(path)`, and `diff_results(old_path, new_path)`. Network probing is intentionally excluded from MCP so AI clients never handle API keys or send HTTP requests through this tool.
 
 ## Run it in CI (GitHub Action)
 
@@ -146,6 +146,57 @@ jobs:
 
 Outputs: `findings` (total) and `failing` (at or above `fail-on`). The action refuses to run unless `i-own-this-project` is `"true"`.
 
+## Catch drift between runs
+
+Compare two local CSV or JSON result files (read-only, local files only, no network) to see what is **new** and what was **resolved** between runs, and optionally exit with code `1` only when a new finding appears at or above `--fail-on-new` (`critical`, `high`, `medium`, or `low`):
+
+```bash
+supabase-rls-check diff \
+  --old baseline_results.json \
+  --new sql_results.json \
+  --out diff.json \
+  --fail-on-new high
+```
+
+Run `check.sql` on a schedule and on pull requests against your baseline (for example `.rls-baseline.json` committed in the repository or downloaded from the previous workflow artifact) so schema drift outside a pull request triggers an alert:
+
+```yaml
+name: RLS drift check
+on:
+  pull_request:
+  schedule:
+    - cron: "0 6 * * *"
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run check.sql and diff against baseline
+        env:
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+        run: |
+          python -m pip install supabase-rls-check
+          supabase-rls-check sql --print-sql > check.sql
+          PGOPTIONS='-c default_transaction_read_only=on' \
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 --csv -f check.sql > current.csv
+          supabase-rls-check sql --from current.csv --out current.json --i-own-this-project
+          supabase-rls-check diff \
+            --old .rls-baseline.json \
+            --new current.json \
+            --out diff.json \
+            --fail-on-new high
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rls-diff
+          path: |
+            current.json
+            diff.json
+```
+
 ## Sample report and offline demo
 
 ![Sample HTML report preview](docs/demo-report.png)
@@ -157,7 +208,7 @@ supabase-rls-check report --from demo/todo_ai.csv --out-dir demo --project "todo
 supabase-rls-check report --from demo/todo_ai.csv --out-dir demo/vi --project "todo-ai (dữ liệu giả)" --lang vi --i-own-this-project
 ```
 
-## Fourteen checks: SQL catalog rules
+## Fifteen checks: SQL catalog rules
 
 `check.sql` inspects PostgreSQL 15+ system catalogs and `storage.buckets` in a single read-only CTE query:
 
@@ -165,6 +216,7 @@ supabase-rls-check report --from demo/todo_ai.csv --out-dir demo/vi --project "t
 | --- | --- | --- |
 | `rls_disabled` | High | Table or partitioned table in `public` has Row Level Security disabled (`relrowsecurity = false`). |
 | `policy_true` | High | Policy in `public` has an unconditional `USING (true)` or `WITH CHECK (true)` expression. |
+| `policy_true_writable` | Critical | Permissive `UPDATE`, `DELETE`, or `ALL` policy in `public` for `anon`, `authenticated`, or `public` has an unconditional `USING (true)` expression on a table where `anon` or `authenticated` holds `UPDATE` or `DELETE` privileges, allowing anyone with that role to modify or delete every row. |
 | `sensitive_anon_policy` | High | Policy granted to `anon` or `public` on a table matching common sensitive names (`user`, `profile`, `order`, `payment`, `invoice`, `customer`, `patient`, `secret`, `token`, `document`) or tagged with a `pii` table comment. |
 | `definer_anon_exec` | High | Non-trigger `SECURITY DEFINER` function in `public` is executable by `anon` (callable via `/rest/v1/rpc/*`). |
 | `definer_search_path` | High | `SECURITY DEFINER` function in `public` has no fixed `search_path` set on the function definition. |
@@ -178,7 +230,7 @@ supabase-rls-check report --from demo/todo_ai.csv --out-dir demo/vi --project "t
 | `matview_api_exposed` | High | Materialized view or foreign table in `public` allows `anon` or `authenticated` to `SELECT`. Row Level Security does not apply to materialized views, so every row is readable through the Data API. Revoke `SELECT` from `anon`/`authenticated` and serve the data through a regular view with `security_invoker = true`, or move it to a schema the API does not expose. |
 | `policy_any_authenticated` | Medium | Policy in `public` only checks that the caller is signed in (`auth.role() = 'authenticated'` or `auth.uid() IS NOT NULL`), giving every signed-in account the same access. Tie the row to `(select auth.uid()) = user_id` or a membership table, or document intentional shared access in a table comment. |
 
-The six newer rules (`policy_user_metadata`, `policy_auth_per_row`, `auth_users_exposed`, `matview_api_exposed`, `public_bucket_listable`, and `policy_any_authenticated`) add only commented guidance to `fix.sql`; they never generate automatic DDL. You can also tag tables with `COMMENT ON TABLE public.x IS 'pii'` so `sensitive_anon_policy` does not depend on table naming (idea from a reader comment on the dev.to article). Overlap is intentional: a materialized view over `auth.users` produces both `auth_users_exposed` and `matview_api_exposed` (same as regular views over `auth.users` overlap with `view_not_invoker`, and listable public buckets produce both `public_bucket` and `public_bucket_listable`). Policy expression checks are heuristics over PostgreSQL's deparsed SQL. The authentication performance check recognizes directly SELECT-wrapped calls; complex subqueries need manual review. The Auth exposure check follows direct dependencies and returns no findings when `auth.users` is absent.
+The seven newer rules (`policy_true_writable`, `policy_user_metadata`, `policy_auth_per_row`, `auth_users_exposed`, `matview_api_exposed`, `public_bucket_listable`, and `policy_any_authenticated`) add only commented guidance to `fix.sql`; they never generate automatic DDL. You can also tag tables with `COMMENT ON TABLE public.x IS 'pii'` so `sensitive_anon_policy` does not depend on table naming (idea from a reader comment on the dev.to article). Overlap is intentional: `policy_true` keeps firing for the same policy as `policy_true_writable`, a materialized view over `auth.users` produces both `auth_users_exposed` and `matview_api_exposed` (same as regular views over `auth.users` overlap with `view_not_invoker`), and listable public buckets produce both `public_bucket` and `public_bucket_listable`. Policy expression checks are heuristics over PostgreSQL's deparsed SQL. The authentication performance check recognizes directly SELECT-wrapped calls; complex subqueries need manual review. The Auth exposure check follows direct dependencies and returns no findings when `auth.users` is absent.
 
 ### Additional checks from `probe`
 
@@ -191,8 +243,8 @@ Tip: pass the anon key through the `SUPABASE_ANON_KEY` environment variable inst
 
 ## How it is tested
 
-- **89 unit tests** (`pytest`): consent flag enforcement, GET/HEAD-only probing with no redirects, response size limits, row values and keys never written to disk, `service_role` JWT detection, local `scan-env` secret detection with masked values, HTML/SQL escaping in reports, identifier quoting in `fix.sql`, English and Vietnamese output, all 14 catalog rules in reports/explanations, comment-only fixes for the newer rules, and the MCP tool surface (no `probe` exposed).
-- **Catalog query on a real PostgreSQL 15** (GitHub Actions): `tests/fixtures/seed_pg.sql` plants issues for all 14 rules next to safe controls. CI compares all 26 expected findings exactly, including overlapping view/matview and bucket findings, and rejects extra or missing rows. Cases cover both JWT sources, all four authentication helpers, mixed wrapped/unwrapped calls, signed-in-only policies, materialized views, public bucket listing policies, `pii` table comments, role grants, and safe `app_metadata`/sub-select/invoker controls. The query runs with read-only transactions, including separate cases without an `auth` schema or `auth.users` table.
+- **Unit tests** (`pytest`): consent flag enforcement, GET/HEAD-only probing with no redirects, response size limits, row values and keys never written to disk, `service_role` JWT detection, local `scan-env` secret detection with masked values, `diff` drift comparison and severity gating, HTML/SQL escaping in reports, identifier quoting in `fix.sql`, English and Vietnamese output, all 15 catalog rules in reports/explanations, comment-only fixes for the newer rules, and the MCP tool surface (no `probe` exposed).
+- **Catalog query on a real PostgreSQL 15** (GitHub Actions): `tests/fixtures/seed_pg.sql` plants issues for all 15 rules next to safe controls. CI compares all 29 expected findings exactly, including overlapping view/matview, writable `USING (true)` policy, and bucket findings, and rejects extra or missing rows. Cases cover both JWT sources, all four authentication helpers, mixed wrapped/unwrapped calls, signed-in-only policies, writable vs read-only `USING (true)` policies, materialized views, public bucket listing policies, `pii` table comments, role grants, and safe `app_metadata`/sub-select/invoker controls. The query runs with read-only transactions, including separate cases without an `auth` schema or `auth.users` table.
 - **Abuse cases checked by hand**: running any command without `--i-own-this-project` exits before touching the network; passing a `service_role` key to `probe` is refused; the MCP server cannot reach the network.
 
 ## Ethical boundaries

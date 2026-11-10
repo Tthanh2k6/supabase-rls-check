@@ -11,6 +11,7 @@ import sys
 import requests
 
 from . import __version__
+from .diff import diff_findings, format_diff_table, should_fail_on_new
 from .envscan import format_envscan_table, scan_env
 from .mcp_server import run_mcp_server
 from .probe import probe
@@ -102,10 +103,38 @@ def build_parser() -> argparse.ArgumentParser:
         help='Optional output JSON path compatible with report --from (e.g. envscan.json)',
     )
 
+    diff_parser = sub.add_parser(
+        'diff',
+        parents=[consent],
+        help='Compare two local CSV/JSON result files (reads local files only) and report new and resolved findings',
+    )
+    diff_parser.add_argument(
+        '--old',
+        nargs='+',
+        required=True,
+        help='Baseline local CSV or JSON result file(s) from a previous run (reads local files only)',
+    )
+    diff_parser.add_argument(
+        '--new',
+        nargs='+',
+        required=True,
+        help='Current local CSV or JSON result file(s) to compare against --old (reads local files only)',
+    )
+    diff_parser.add_argument(
+        '--out',
+        help='Optional output JSON path for the diff result (e.g. diff.json)',
+    )
+    diff_parser.add_argument(
+        '--fail-on-new',
+        type=str.lower,
+        choices=('critical', 'high', 'medium', 'low'),
+        help='Exit with code 1 if any NEW finding is at or above this severity (default: never fail)',
+    )
+
     sub.add_parser(
         'mcp',
         parents=[consent],
-        help='Run the optional stdio MCP server (analyze_sql_export, explain_rule, and scan_public_env; local files only)',
+        help='Run the optional stdio MCP server (analyze_sql_export, explain_rule, scan_public_env, and diff_results; local files only)',
     )
 
     return parser
@@ -133,6 +162,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         except (OSError, ValueError) as exc:
             print(str(exc), file=sys.stderr)
+            return 1
+
+    if args.mode == 'diff':
+        try:
+            result = diff_findings(args.old, args.new)
+            print(format_diff_table(result))
+            if args.out:
+                Path(args.out).write_text(json.dumps(result, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+            if should_fail_on_new(result, args.fail_on_new):
+                return 1
+            return 0
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+            print(
+                'Diff failed: verify local CSV/JSON result files and permissions. Sensitive error details suppressed.',
+                file=sys.stderr,
+            )
             return 1
 
     if args.mode == 'mcp':

@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .diff import diff_findings
 from .envscan import scan_env
 from .report import deduplicate_and_sort_findings, fix_sql
 from .rules import NOTES, RULES, SEVERITIES, explain_rule as _explain_rule, load_result
@@ -17,7 +18,12 @@ MCP_INSTALL_HINT = (
     'Optional dependency "mcp" is not installed. '
     'Install it with: pip install "supabase-rls-check[mcp]"'
 )
-MCP_TOOL_NAMES: tuple[str, str, str] = ('analyze_sql_export', 'explain_rule', 'scan_public_env')
+MCP_TOOL_NAMES: tuple[str, str, str, str] = (
+    'analyze_sql_export',
+    'explain_rule',
+    'scan_public_env',
+    'diff_results',
+)
 
 
 def analyze_sql_export(path: str) -> dict[str, Any]:
@@ -114,6 +120,55 @@ def scan_public_env(path: str) -> dict[str, Any]:
     }
 
 
+def _enrich_finding(item: dict[str, Any]) -> dict[str, Any]:
+    severity, title, remedy, _, _ = RULES[item['rule']]
+    entry: dict[str, Any] = {
+        'rule': item['rule'],
+        'severity': severity,
+        'title': title,
+        'schema_name': item['schema_name'],
+        'object_name': item['object_name'],
+        'policy_name': item['policy_name'],
+        'remediation': remedy,
+    }
+    if item['rule'] == 'anon_readable':
+        entry['columns'] = item['columns']
+        entry['row_count'] = item['row_count']
+    return entry
+
+
+def diff_results(old_path: str, new_path: str) -> dict[str, Any]:
+    """Compare two local CSV or JSON result files (read-only, local files only, no network) and return new and resolved findings."""
+    for label, raw in (('old_path', old_path), ('new_path', new_path)):
+        if not isinstance(raw, str) or not raw.strip():
+            raise ValueError(f'Provide a path to a .csv or .json result file for {label}.')
+        if Path(raw).suffix.lower() not in ('.csv', '.json'):
+            raise ValueError('Only .csv and .json result files are supported.')
+    try:
+        raw_diff = diff_findings(old_path, new_path)
+    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        raise ValueError(
+            'Invalid or unreadable result file; expected UTF-8 CSV or JSON metadata with '
+            'rule, schema_name, object_name, and optional policy_name columns.'
+        ) from exc
+
+    enriched_new = [_enrich_finding(item) for item in raw_diff['new']]
+    enriched_resolved = [_enrich_finding(item) for item in raw_diff['resolved']]
+    counts_new = {sev: sum(1 for f in enriched_new if f['severity'] == sev) for sev in SEVERITIES}
+    return {
+        'new': enriched_new,
+        'resolved': enriched_resolved,
+        'unchanged_count': raw_diff['unchanged_count'],
+        'new_count': len(enriched_new),
+        'resolved_count': len(enriched_resolved),
+        'counts_new': counts_new,
+        'limitations': (
+            'Read-only comparison of local result files only; no network requests are made '
+            'and zero new findings does not certify safety.'
+        ),
+    }
+
+
 def create_mcp_server(fastmcp_cls: Any = None) -> Any:
     """Instantiate FastMCP with only local read-only tools registered."""
     if fastmcp_cls is None:
@@ -128,6 +183,7 @@ def create_mcp_server(fastmcp_cls: Any = None) -> Any:
     server.tool()(analyze_sql_export)
     server.tool()(explain_rule)
     server.tool()(scan_public_env)
+    server.tool()(diff_results)
     return server
 
 

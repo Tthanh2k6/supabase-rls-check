@@ -60,6 +60,7 @@ def fix_sql(findings: Sequence[dict[str, Any]], lang: str = 'en') -> str:
         ]
     for f in findings:
         if f['rule'] in (
+            'policy_true_writable',
             'policy_user_metadata',
             'policy_auth_per_row',
             'auth_users_exposed',
