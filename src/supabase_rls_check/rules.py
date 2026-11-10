@@ -101,6 +101,13 @@ RULES: dict[str, tuple[str, str, str, str, str]] = {
         'Bucket công khai có policy cho phép liệt kê toàn bộ tệp',
         'Xóa policy SELECT quá rộng trên storage.objects; tệp trong bucket công khai vẫn tải được qua URL, và nếu cần liệt kê thì chỉ giới hạn cho chủ sở hữu đã xác thực.',
     ),
+    'policy_any_authenticated': (
+        'Medium',
+        'Policy allows any authenticated user',
+        'Tie the row to the caller (for example (select auth.uid()) = user_id) or to a membership table; if every signed-in user really should see the table, say so in a table comment and accept the finding.',
+        'Policy cho phép mọi người dùng đã đăng nhập',
+        'Gắn dòng dữ liệu với người gọi (ví dụ (select auth.uid()) = user_id) hoặc bảng thành viên; nếu mọi người dùng đã đăng nhập thực sự được phép xem bảng, hãy ghi rõ trong comment của bảng và chấp nhận phát hiện.',
+    ),
     'anon_readable': (
         'High',
         'Rows readable without login',
@@ -114,6 +121,27 @@ RULES: dict[str, tuple[str, str, str, str, str]] = {
         'Treat as exposed: rotate/revoke the key, remove it from frontend bundles and review access logs. Signature and validity were not verified.',
         'Frontend chứa JWT service_role',
         'Xử lý như khóa đã lộ: thu hồi/đổi khóa, xóa khỏi frontend và rà nhật ký. Chưa xác minh chữ ký hoặc hiệu lực.',
+    ),
+    'public_env_service_role': (
+        'Critical',
+        'Public environment variable contains a Supabase service_role or secret key',
+        'Move the secret to server-side code (Edge Function / API route), rotate the leaked key now, and keep only the anon/publishable key in the client.',
+        'Biến môi trường công khai chứa khóa service_role hoặc khóa bí mật Supabase',
+        'Chuyển khóa bí mật sang mã phía máy chủ (Edge Function / API route), đổi/xoay vòng khóa đã lộ ngay lập tức và chỉ giữ khóa anon/publishable ở phía client.',
+    ),
+    'public_env_secret_key': (
+        'High',
+        'Public environment variable exposes a secret key',
+        'Move the secret to server-side code (Edge Function / API route), rotate the leaked key now, and keep only the anon/publishable key in the client.',
+        'Biến môi trường công khai làm lộ khóa bí mật',
+        'Chuyển khóa bí mật sang mã phía máy chủ (Edge Function / API route), đổi/xoay vòng khóa đã lộ ngay lập tức và chỉ giữ khóa anon/publishable ở phía client.',
+    ),
+    'service_role_in_client_code': (
+        'Critical',
+        'Client source code contains a Supabase service_role or secret key literal',
+        'Move the secret to server-side code (Edge Function / API route), rotate the leaked key now, and keep only the anon/publishable key in the client.',
+        'Mã nguồn client chứa trực tiếp khóa service_role hoặc khóa bí mật Supabase',
+        'Chuyển khóa bí mật sang mã phía máy chủ (Edge Function / API route), đổi/xoay vòng khóa đã lộ ngay lập tức và chỉ giữ khóa anon/publishable ở phía client.',
     ),
 }
 
@@ -131,6 +159,13 @@ SQL_RULES: tuple[str, ...] = (
     'auth_users_exposed',
     'matview_api_exposed',
     'public_bucket_listable',
+    'policy_any_authenticated',
+)
+
+ENV_RULES: tuple[str, ...] = (
+    'public_env_service_role',
+    'public_env_secret_key',
+    'service_role_in_client_code',
 )
 
 SEVERITIES: list[str] = ['Critical', 'High', 'Medium', 'Low']
@@ -381,6 +416,27 @@ RULE_GUIDES: dict[str, dict[str, str]] = {
             '-- If listing is needed, restrict SELECT on storage.objects to authenticated owners.'
         ),
     },
+    'policy_any_authenticated': {
+        'source': 'SQL catalog check (check.sql)',
+        'why': (
+            'A policy in public has a USING or WITH CHECK expression that only checks whether the caller '
+            'is signed in (auth.role() = \'authenticated\' or auth.uid() IS NOT NULL). Because email signup '
+            'is enabled by default in Supabase projects, any signed-in account receives the same access to '
+            'every row matched by the policy.'
+        ),
+        'caveat': (
+            'Intentional only when every signed-in user should see or modify the table. If so, document '
+            'that intent in a table comment and accept the finding.'
+        ),
+        'example': (
+            '-- Tie the row to the caller or to a membership table:\n'
+            '-- ALTER POLICY "your_policy" ON public.your_table\n'
+            '--   USING ((select auth.uid()) = user_id)\n'
+            '--   WITH CHECK ((select auth.uid()) = user_id);\n'
+            '-- Or document intentional shared access in a table comment and accept the finding:\n'
+            "-- COMMENT ON TABLE public.your_table IS 'shared across all authenticated users';"
+        ),
+    },
     'anon_readable': {
         'source': 'Anonymous HTTP probe (probe)',
         'why': (
@@ -413,6 +469,59 @@ RULE_GUIDES: dict[str, dict[str, str]] = {
             '3. Redeploy frontend assets, purge CDN caches, and audit database/storage logs.'
         ),
     },
+    'public_env_service_role': {
+        'source': 'Local public-env scan (scan-env)',
+        'why': (
+            'A variable with a client-bundled prefix (EXPO_PUBLIC_, NEXT_PUBLIC_, VITE_, REACT_APP_, '
+            'PUBLIC_, or NUXT_PUBLIC_) contains a Supabase service_role JWT or sb_secret_ key. Build tools '
+            'inline these variables directly into browser or mobile bundles, giving every user full '
+            'RLS-bypassing privileges.'
+        ),
+        'caveat': (
+            'Local static scan only; token signatures and live validity are not checked over the network. '
+            'Any real service_role or sb_secret_ key in a public env file must be rotated immediately.'
+        ),
+        'example': (
+            '1. Move the secret to server-side code (Edge Function or API route) without a public prefix.\n'
+            '2. Rotate the leaked service_role / sb_secret_ key in the Supabase Dashboard now.\n'
+            '3. Keep only the anon JWT or sb_publishable_ key in client environment variables.'
+        ),
+    },
+    'public_env_secret_key': {
+        'source': 'Local public-env scan (scan-env)',
+        'why': (
+            'A public-prefixed environment variable (EXPO_PUBLIC_, NEXT_PUBLIC_, VITE_, REACT_APP_, '
+            'PUBLIC_, or NUXT_PUBLIC_) either starts with a known secret key prefix (sk_live_, rk_live_, '
+            'sk-proj-, sk-ant-) or has a name containing SERVICE_ROLE, SECRET, or PRIVATE_KEY. These '
+            'variables are bundled into client apps and readable by end users.'
+        ),
+        'caveat': (
+            'Name-only matches ("name suggests a secret") are a naming heuristic; verify whether the value '
+            'is sensitive or rename the variable if it stores a non-secret public value.'
+        ),
+        'example': (
+            '1. Move the secret to server-side code (Edge Function or API route) using server-only env vars.\n'
+            '2. Rotate the leaked key in the provider dashboard now.\n'
+            '3. Keep only the anon/publishable key in the client.'
+        ),
+    },
+    'service_role_in_client_code': {
+        'source': 'Local public-env scan (scan-env)',
+        'why': (
+            'A hardcoded Supabase service_role JWT or sb_secret_ literal was found in a client-side source '
+            'file outside server/Edge Function directories. Shipping a service_role or sb_secret_ key in '
+            'client code bypasses all Row Level Security policies for anyone who inspects the app bundle.'
+        ),
+        'caveat': (
+            'Files under supabase/functions/, server/, api/, scripts/, and backend/ are excluded by path '
+            'heuristic. Secrets in server code should still be read from environment variables.'
+        ),
+        'example': (
+            '1. Move the secret and privileged logic to server-side code (Edge Function or API route).\n'
+            '2. Rotate the leaked service_role / sb_secret_ key in the Supabase Dashboard now.\n'
+            '3. Keep only the anon/publishable key in the client.'
+        ),
+    },
 }
 
 
@@ -443,6 +552,19 @@ def finding(
         result['columns'] = sorted({clean(c) for c in extra.get('columns', [])})
         count = extra.get('row_count')
         result['row_count'] = count if type(count) is int and count >= 0 else None
+    elif rule in ENV_RULES:
+        result['severity'] = RULES[rule][0]
+        if extra.get('file') is not None:
+            result['file'] = clean(str(extra['file']))
+        line = extra.get('line')
+        if type(line) is int and line > 0:
+            result['line'] = line
+        if extra.get('variable') is not None:
+            result['variable'] = clean(str(extra['variable']))
+        if extra.get('masked_value') is not None:
+            result['masked_value'] = clean(str(extra['masked_value']))
+        if extra.get('reason') is not None:
+            result['reason'] = clean(str(extra['reason']))
     return result
 
 
@@ -487,6 +609,11 @@ def load_result(path: str | Path) -> dict[str, Any]:
                 item.get('policy_name', ''),
                 columns=item.get('columns', []),
                 row_count=item.get('row_count'),
+                file=item.get('file'),
+                line=item.get('line'),
+                variable=item.get('variable'),
+                masked_value=item.get('masked_value'),
+                reason=item.get('reason'),
             )
         )
     return {'findings': rows, 'notes': notes, 'observations': observations}

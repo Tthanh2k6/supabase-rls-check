@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-11-10
+
+### Added
+- Read-only catalog rule `policy_any_authenticated` (Medium) for policies in `public` whose `USING` or `WITH CHECK` expression only checks that the caller is signed in (`auth.role() = 'authenticated'` or `auth.uid() IS NOT NULL`, with or without a `(SELECT ...)` wrapper), bringing the catalog total to 14 checks (ideas from dev.to and LinkedIn readers).
+- Local public-env and client-code secret scanner (`supabase-rls-check scan-env PATH [--out envscan.json]` and `scan_public_env(path)` MCP tool) detecting `public_env_service_role` (Critical), `public_env_secret_key` (High), and `service_role_in_client_code` (Critical) across `.env*`, Expo/EAS config files, and client source files while masking secret values (ideas from dev.to and LinkedIn readers).
+- English and Vietnamese titles/remediation, `explain` guides, HTML/Markdown report integration, comment-only `fix.sql` guidance, PostgreSQL 15 fixtures (26 expected catalog findings), and unit tests for `policy_any_authenticated` and `scan-env`.
+
 ## [0.3.0] - 2026-11-10
 
 ### Added

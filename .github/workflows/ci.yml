@@ -95,6 +95,8 @@ jobs:
               ("definer_search_path", "public", "handle_new_user()", ""),
               ("matview_api_exposed", "public", "auth_snapshot", ""),
               ("matview_api_exposed", "public", "sales_rollup", ""),
+              ("policy_any_authenticated", "public", "posts", "any_signed_in_role"),
+              ("policy_any_authenticated", "public", "posts", "any_signed_in_uid"),
               ("policy_auth_per_row", "public", "notes", "mixed_auth_calls"),
               ("policy_auth_per_row", "public", "notes", "per_row_jwt"),
               ("policy_auth_per_row", "public", "notes", "per_row_role"),

@@ -65,6 +65,7 @@ def fix_sql(findings: Sequence[dict[str, Any]], lang: str = 'en') -> str:
             'auth_users_exposed',
             'matview_api_exposed',
             'public_bucket_listable',
+            'policy_any_authenticated',
         ):
             target = clean(f['schema_name']) + '.' + clean(f['object_name'])
             policy = ': ' + clean(f['policy_name']) if f['policy_name'] else ''

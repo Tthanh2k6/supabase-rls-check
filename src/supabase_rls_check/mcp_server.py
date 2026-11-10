@@ -1,4 +1,4 @@
-"""Optional stdio MCP server exposing strictly local, read-only SQL analysis and rule docs.
+"""Optional stdio MCP server exposing strictly local, read-only SQL/env analysis and rule docs.
 
 Network probing is intentionally excluded from MCP so AI assistants never handle API keys
 or initiate HTTP requests against Supabase projects through this server.
@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .envscan import scan_env
 from .report import deduplicate_and_sort_findings, fix_sql
 from .rules import NOTES, RULES, SEVERITIES, explain_rule as _explain_rule, load_result
 
@@ -16,7 +17,7 @@ MCP_INSTALL_HINT = (
     'Optional dependency "mcp" is not installed. '
     'Install it with: pip install "supabase-rls-check[mcp]"'
 )
-MCP_TOOL_NAMES: tuple[str, str] = ('analyze_sql_export', 'explain_rule')
+MCP_TOOL_NAMES: tuple[str, str, str] = ('analyze_sql_export', 'explain_rule', 'scan_public_env')
 
 
 def analyze_sql_export(path: str) -> dict[str, Any]:
@@ -71,8 +72,50 @@ def explain_rule(rule: str) -> str:
     return _explain_rule(rule, lang='en')
 
 
+def scan_public_env(path: str) -> dict[str, Any]:
+    """Scan a local project directory (read-only, local files only, no network) for secrets in public env variables and client source files, returning masked values only."""
+    if not isinstance(path, str) or not path.strip():
+        raise ValueError('Provide a path to a local project directory.')
+    try:
+        envelope = scan_env(path)
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ValueError('Unable to scan local project directory; verify the directory exists and is readable.') from exc
+
+    findings = deduplicate_and_sort_findings([envelope])
+    enriched: list[dict[str, Any]] = []
+    for item in findings:
+        severity, title, remedy, _, _ = RULES[item['rule']]
+        entry: dict[str, Any] = {
+            'rule': item['rule'],
+            'severity': severity,
+            'title': title,
+            'file': item.get('file', ''),
+            'line': item.get('line'),
+            'variable': item.get('variable', ''),
+            'masked_value': item.get('masked_value', ''),
+            'schema_name': item['schema_name'],
+            'object_name': item['object_name'],
+            'policy_name': item['policy_name'],
+            'remediation': remedy,
+        }
+        if 'reason' in item:
+            entry['reason'] = item['reason']
+        enriched.append(entry)
+
+    counts = {sev: sum(1 for f in enriched if f['severity'] == sev) for sev in SEVERITIES}
+    return {
+        'total_findings': len(enriched),
+        'counts': counts,
+        'findings': enriched,
+        'limitations': (
+            'Read-only scan of local project files only; no network requests are made and all secret '
+            'values are masked. Zero findings does not certify that no secrets exist in other files.'
+        ),
+    }
+
+
 def create_mcp_server(fastmcp_cls: Any = None) -> Any:
-    """Instantiate FastMCP with only analyze_sql_export and explain_rule registered."""
+    """Instantiate FastMCP with only local read-only tools registered."""
     if fastmcp_cls is None:
         try:  # mcp >= 2.0 renamed FastMCP to MCPServer
             from mcp.server.mcpserver import MCPServer as fastmcp_cls
@@ -84,6 +127,7 @@ def create_mcp_server(fastmcp_cls: Any = None) -> Any:
     server = fastmcp_cls('supabase-rls-check')
     server.tool()(analyze_sql_export)
     server.tool()(explain_rule)
+    server.tool()(scan_public_env)
     return server
 
 

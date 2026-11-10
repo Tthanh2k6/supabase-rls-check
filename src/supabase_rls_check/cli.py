@@ -11,6 +11,7 @@ import sys
 import requests
 
 from . import __version__
+from .envscan import format_envscan_table, scan_env
 from .mcp_server import run_mcp_server
 from .probe import probe
 from .report import report
@@ -87,10 +88,24 @@ def build_parser() -> argparse.ArgumentParser:
     explain_parser.add_argument('rule', help='Rule identifier (e.g. rls_disabled, policy_true, definer_anon_exec)')
     explain_parser.add_argument('--lang', choices=('en', 'vi'), default='en', help='Output language (default: en)')
 
+    scan_env_parser = sub.add_parser(
+        'scan-env',
+        parents=[consent],
+        help='Scan local project files only (read-only, no network) for secrets in public env variables and client code',
+    )
+    scan_env_parser.add_argument(
+        'path',
+        help='Project directory to scan (reads local files only and masks secret values)',
+    )
+    scan_env_parser.add_argument(
+        '--out',
+        help='Optional output JSON path compatible with report --from (e.g. envscan.json)',
+    )
+
     sub.add_parser(
         'mcp',
         parents=[consent],
-        help='Run the optional stdio MCP server (analyze_sql_export and explain_rule only)',
+        help='Run the optional stdio MCP server (analyze_sql_export, explain_rule, and scan_public_env; local files only)',
     )
 
     return parser
@@ -106,6 +121,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(explain_rule(args.rule, lang=args.lang))
             return 0
         except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+
+    if args.mode == 'scan-env':
+        try:
+            result = scan_env(args.path)
+            print(format_envscan_table(result))
+            if args.out:
+                Path(args.out).write_text(json.dumps(result, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+            return 0
+        except (OSError, ValueError) as exc:
             print(str(exc), file=sys.stderr)
             return 1
 

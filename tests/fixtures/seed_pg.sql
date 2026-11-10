@@ -1,5 +1,5 @@
 -- Seed fixture for PostgreSQL 15+ CI verification of src/supabase_rls_check/sql/check.sql.
--- Simulates Supabase roles, Auth, and storage.buckets/objects; exercises all 13 catalog rules
+-- Simulates Supabase roles, Auth, and storage.buckets/objects; exercises all 14 catalog rules
 -- alongside hardened negative-control objects and mixed policy expressions.
 
 BEGIN;
@@ -167,7 +167,7 @@ CREATE POLICY per_row_uid ON public.notes FOR ALL TO authenticated
 CREATE POLICY per_row_jwt ON public.notes FOR INSERT TO authenticated
   WITH CHECK ((auth.jwt() ->> 'sub') = owner_id::text);
 CREATE POLICY per_row_role ON public.notes FOR SELECT TO authenticated
-  USING (auth.role() = 'authenticated');
+  USING (auth.role() = 'authenticated' AND body IS NOT NULL);
 CREATE POLICY per_row_setting ON public.notes FOR SELECT TO authenticated
   USING (current_setting('request.jwt.claims', true) IS NOT NULL);
 CREATE POLICY mixed_auth_calls ON public.notes FOR SELECT TO authenticated
@@ -188,7 +188,7 @@ CREATE POLICY unrelated_metadata_literal ON public.notes FOR SELECT TO authentic
   USING (((SELECT auth.jwt()) -> 'app_metadata' ->> 'role') = body AND body <> 'user_metadata');
 -- No performance finding when RLS is disabled (todos still has its original rls_disabled finding).
 CREATE POLICY inactive_auth_call ON public.todos FOR SELECT TO authenticated
-  USING (auth.uid() IS NOT NULL);
+  USING (auth.uid() IS NOT NULL AND title IS NOT NULL);
 
 -- 11. auth_users_exposed: SELECT via either API role, including a stored snapshot.
 -- Selecting two columns must still yield just one auth_users_exposed row per object.
@@ -217,5 +217,22 @@ GRANT SELECT ON public.sales_rollup TO anon;
 CREATE MATERIALIZED VIEW public.internal_rollup AS
   SELECT id, amount FROM public.payments;
 REVOKE ALL ON public.internal_rollup FROM PUBLIC, anon, authenticated;
+
+-- 13. policy_any_authenticated: RLS-enabled public table with policies that only check signed-in state
+CREATE TABLE public.posts (
+  id uuid PRIMARY KEY,
+  user_id uuid NOT NULL,
+  title text NOT NULL
+);
+ALTER TABLE public.posts ENABLE ROW LEVEL SECURITY;
+CREATE POLICY any_signed_in_role ON public.posts
+  FOR SELECT TO authenticated
+  USING ((select auth.role()) = 'authenticated');
+CREATE POLICY any_signed_in_uid ON public.posts
+  FOR SELECT TO authenticated
+  USING ((select auth.uid()) IS NOT NULL);
+CREATE POLICY owner_only_ok ON public.posts
+  FOR SELECT TO authenticated
+  USING ((select auth.uid()) = user_id);
 
 COMMIT;

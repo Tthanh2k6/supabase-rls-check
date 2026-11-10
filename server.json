@@ -1,17 +1,17 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.Tthanh2k6/supabase-rls-check",
-  "description": "Read-only Supabase RLS and policy checks: explain rules and analyze a check.sql export.",
+  "description": "Read-only Supabase RLS and policy checks: explain rules, analyze a check.sql export, and scan local public env vars.",
   "repository": {
     "url": "https://github.com/Tthanh2k6/supabase-rls-check",
     "source": "github"
   },
-  "version": "0.3.0",
+  "version": "0.4.0",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "supabase-rls-check",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
