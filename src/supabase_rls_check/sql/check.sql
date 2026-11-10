@@ -149,7 +149,8 @@ WITH policy_expressions AS (
             '',
             'g'
           )
-        ) IN ('auth.role()=''authenticated''', 'auth.uid()isnotnull')
+        -- Parentheses are stripped above, so auth.role() becomes auth.role here.
+        ) IN ('auth.role=''authenticated''', 'auth.uidisnotnull')
 )
 SELECT rule, schema_name, object_name, policy_name FROM findings
 ORDER BY rule, schema_name, object_name, policy_name;
