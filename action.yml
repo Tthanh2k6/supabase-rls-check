@@ -19,7 +19,7 @@ inputs:
   version:
     description: supabase-rls-check version to install from PyPI, or "local" to install from the action checkout.
     required: false
-    default: 0.4.0
+    default: 0.5.0
   report-dir:
     description: Directory for report.md, report.html and fix.sql.
     required: false

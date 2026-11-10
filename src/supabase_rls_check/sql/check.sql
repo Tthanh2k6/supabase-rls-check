@@ -151,6 +151,24 @@ WITH policy_expressions AS (
           )
         -- Parentheses are stripped above, so auth.role() becomes auth.role here.
         ) IN ('auth.role=''authenticated''', 'auth.uidisnotnull')
+  UNION ALL
+  SELECT DISTINCT 'policy_true_writable', p.schemaname::text, p.tablename::text, p.policyname::text
+  FROM pg_catalog.pg_policies p
+  JOIN pg_catalog.pg_namespace n ON n.nspname = p.schemaname
+  JOIN pg_catalog.pg_class c ON c.relnamespace = n.oid AND c.relname = p.tablename
+  WHERE p.schemaname = 'public'
+    AND p.permissive = 'PERMISSIVE'
+    AND p.cmd IN ('UPDATE', 'DELETE', 'ALL')
+    AND regexp_replace(coalesce(p.qual, ''), '[()[:space:]]', '', 'g') = 'true'
+    AND p.roles && ARRAY['anon', 'authenticated', 'public']::name[]
+    AND EXISTS (
+      SELECT 1 FROM pg_catalog.pg_roles r
+      WHERE r.rolname IN ('anon', 'authenticated')
+        AND (
+          pg_catalog.has_table_privilege(r.oid, c.oid, 'UPDATE')
+          OR pg_catalog.has_table_privilege(r.oid, c.oid, 'DELETE')
+        )
+    )
 )
 SELECT rule, schema_name, object_name, policy_name FROM findings
 ORDER BY rule, schema_name, object_name, policy_name;

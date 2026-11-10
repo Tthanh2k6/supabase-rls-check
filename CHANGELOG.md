@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-11-10
+
+### Added
+- Read-only catalog rule `policy_true_writable` (Critical) for permissive `UPDATE`, `DELETE`, or `ALL` policies in `public` whose `USING` expression is unconditionally `true` on a table where `anon` or `authenticated` holds `UPDATE` or `DELETE` privileges, bringing the catalog total to 15 checks (ideas from LinkedIn and dev.to readers).
+- `diff` command (`supabase-rls-check diff --old OLD --new NEW [--out diff.json] [--fail-on-new SEVERITY]`) and `diff_results(old_path, new_path)` MCP tool to compare two local CSV/JSON runs, report new and resolved findings with severity, and optionally fail CI only on new findings at or above a chosen severity (ideas from LinkedIn and dev.to readers).
+- English and Vietnamese titles/remediation, `explain` guide, comment-only `fix.sql` guidance, PostgreSQL 15 fixtures (29 expected catalog findings), and unit tests for `policy_true_writable` and `diff`.
+
 ## [0.4.0] - 2026-11-10
 
 ### Added

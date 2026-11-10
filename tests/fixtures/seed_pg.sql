@@ -1,5 +1,5 @@
 -- Seed fixture for PostgreSQL 15+ CI verification of src/supabase_rls_check/sql/check.sql.
--- Simulates Supabase roles, Auth, and storage.buckets/objects; exercises all 14 catalog rules
+-- Simulates Supabase roles, Auth, and storage.buckets/objects; exercises all 15 catalog rules
 -- alongside hardened negative-control objects and mixed policy expressions.
 
 BEGIN;
@@ -234,5 +234,25 @@ CREATE POLICY any_signed_in_uid ON public.posts
 CREATE POLICY owner_only_ok ON public.posts
   FOR SELECT TO authenticated
   USING ((select auth.uid()) = user_id);
+
+-- 14. policy_true_writable: permissive UPDATE/DELETE/ALL policy with USING (true) and write grant
+CREATE TABLE public.shared_notes (
+  id uuid PRIMARY KEY,
+  body text NOT NULL
+);
+ALTER TABLE public.shared_notes ENABLE ROW LEVEL SECURITY;
+CREATE POLICY anyone_edits_notes ON public.shared_notes
+  FOR UPDATE TO authenticated
+  USING (true);
+GRANT UPDATE ON public.shared_notes TO authenticated;
+
+CREATE TABLE public.readonly_notes (
+  id uuid PRIMARY KEY,
+  body text NOT NULL
+);
+ALTER TABLE public.readonly_notes ENABLE ROW LEVEL SECURITY;
+CREATE POLICY anyone_reads_notes ON public.readonly_notes
+  FOR SELECT TO authenticated
+  USING (true);
 
 COMMIT;

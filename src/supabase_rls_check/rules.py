@@ -24,6 +24,13 @@ RULES: dict[str, tuple[str, str, str, str, str]] = {
         'Policy có điều kiện luôn đúng',
         'Rà lệnh, role và tổ hợp policy; thay policy cấp quyền quá rộng.',
     ),
+    'policy_true_writable': (
+        'Critical',
+        'Unconditional write policy on a writable table',
+        'Drop the write policy or tie it to the row owner (using ((select auth.uid()) = user_id)), and revoke UPDATE/DELETE from anon if the API should never write that table.',
+        'Policy cho phép sửa hoặc xóa mọi dòng trên bảng có quyền ghi',
+        'Xóa policy ghi hoặc gắn với chủ sở hữu dòng (using ((select auth.uid()) = user_id)), đồng thời thu hồi quyền UPDATE/DELETE của anon nếu API không cần ghi bảng này.',
+    ),
     'sensitive_anon_policy': (
         'High',
         'Anonymous role on a potentially sensitive table',
@@ -148,6 +155,7 @@ RULES: dict[str, tuple[str, str, str, str, str]] = {
 SQL_RULES: tuple[str, ...] = (
     'rls_disabled',
     'policy_true',
+    'policy_true_writable',
     'sensitive_anon_policy',
     'definer_anon_exec',
     'definer_search_path',
@@ -224,6 +232,29 @@ RULE_GUIDES: dict[str, dict[str, str]] = {
             'CREATE POLICY "authenticated_own_rows" ON public.your_table\n'
             '  FOR SELECT TO authenticated\n'
             '  USING ((SELECT auth.uid()) = user_id);'
+        ),
+    },
+    'policy_true_writable': {
+        'source': 'SQL catalog check (check.sql)',
+        'why': (
+            'A permissive policy in public for UPDATE, DELETE, or ALL has an unconditional USING (true) '
+            'expression on a table where anon or authenticated holds UPDATE or DELETE privileges. '
+            'Anyone with that role can change or delete every row through the Data API, which is worse '
+            'than the read leak policy_true already reports.'
+        ),
+        'caveat': (
+            'Almost never intentional on API-exposed tables. policy_true also fires for the same policy; '
+            'that overlap is intentional so unconditional write policies are highlighted at Critical severity.'
+        ),
+        'example': (
+            '-- Drop the write policy or tie it to the row owner:\n'
+            '-- DROP POLICY IF EXISTS "your_write_policy" ON public.your_table;\n'
+            '-- CREATE POLICY "owner_update" ON public.your_table\n'
+            '--   FOR UPDATE TO authenticated\n'
+            '--   USING ((select auth.uid()) = user_id)\n'
+            '--   WITH CHECK ((select auth.uid()) = user_id);\n'
+            '-- Revoke UPDATE/DELETE from anon if the API should never write that table:\n'
+            '-- REVOKE UPDATE, DELETE ON public.your_table FROM anon;'
         ),
     },
     'sensitive_anon_policy': {
