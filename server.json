@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.Tthanh2k6/supabase-rls-check",
-  "description": "Read-only Supabase RLS and policy checks: explain rules, analyze a check.sql export, and scan local public env vars.",
+  "description": "Read-only Supabase RLS checks: explain rules, analyze check.sql exports, scan public env vars.",
   "repository": {
     "url": "https://github.com/Tthanh2k6/supabase-rls-check",
     "source": "github"
