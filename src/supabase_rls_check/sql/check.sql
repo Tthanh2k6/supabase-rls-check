@@ -22,11 +22,16 @@ WITH policy_expressions AS (
     regexp_replace(coalesce(qual, ''), '[()[:space:]]', '', 'g') = 'true'
     OR regexp_replace(coalesce(with_check, ''), '[()[:space:]]', '', 'g') = 'true')
   UNION ALL
-  SELECT 'sensitive_anon_policy', schemaname::text, tablename::text, policyname::text
-  FROM pg_catalog.pg_policies
-  WHERE schemaname = 'public'
-    AND roles && ARRAY['anon', 'public']::name[]
-    AND tablename ~* '(user|profile|order|payment|invoice|customer|patient|secret|token|document)'
+  SELECT 'sensitive_anon_policy', p.schemaname::text, p.tablename::text, p.policyname::text
+  FROM pg_catalog.pg_policies p
+  JOIN pg_catalog.pg_namespace n ON n.nspname = p.schemaname
+  JOIN pg_catalog.pg_class c ON c.relnamespace = n.oid AND c.relname = p.tablename
+  WHERE p.schemaname = 'public'
+    AND p.roles && ARRAY['anon', 'public']::name[]
+    AND (
+      p.tablename ~* '(user|profile|order|payment|invoice|customer|patient|secret|token|document)'
+      OR pg_catalog.obj_description(c.oid, 'pg_class') ~* '\mpii\M'
+    )
   UNION ALL
   SELECT 'definer_search_path', n.nspname::text,
          p.proname || '(' || pg_catalog.pg_get_function_identity_arguments(p.oid) || ')', ''
@@ -101,6 +106,29 @@ WITH policy_expressions AS (
       JOIN pg_catalog.pg_namespace bn ON bn.oid = base.relnamespace
       WHERE rw.ev_class = c.oid AND bn.nspname = 'auth' AND base.relname = 'users'
     )
+  UNION ALL
+  SELECT 'matview_api_exposed', n.nspname::text, c.relname::text, ''
+  FROM pg_catalog.pg_class c
+  JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+  WHERE n.nspname = 'public' AND c.relkind IN ('m', 'f')
+    AND EXISTS (
+      SELECT 1 FROM pg_catalog.pg_roles r
+      WHERE r.rolname IN ('anon', 'authenticated')
+        AND pg_catalog.has_table_privilege(r.oid, c.oid, 'SELECT')
+    )
+  UNION ALL
+  SELECT DISTINCT 'public_bucket_listable', 'storage', b.name, p.policyname::text
+  FROM storage.buckets b
+  JOIN pg_catalog.pg_policies p
+    ON p.schemaname = 'storage'
+   AND p.tablename = 'objects'
+   AND p.cmd IN ('SELECT', 'ALL')
+   AND p.roles && ARRAY['anon', 'public']::name[]
+   AND (
+     position('''' || b.id || '''' in coalesce(p.qual, '')) > 0
+     OR regexp_replace(coalesce(p.qual, ''), '[()[:space:]]', '', 'g') = 'true'
+   )
+  WHERE b.public = true
 )
 SELECT rule, schema_name, object_name, policy_name FROM findings
 ORDER BY rule, schema_name, object_name, policy_name;

@@ -87,6 +87,20 @@ RULES: dict[str, tuple[str, str, str, str, str]] = {
         'View trong schema public làm lộ bảng auth.users',
         'Xóa view hoặc bật security_invoker cho view thường và thu hồi quyền SELECT của anon/authenticated, kể cả quyền kế thừa. Chỉ công khai các cột cần thiết từ bảng hồ sơ người dùng riêng.',
     ),
+    'matview_api_exposed': (
+        'High',
+        'Materialized view or foreign table exposed to API roles',
+        'Revoke SELECT from anon/authenticated and serve the data through a regular view with security_invoker = true, or move it to a schema the API does not expose.',
+        'Materialized view hoặc bảng ngoại trong public cho phép role API đọc',
+        'Thu hồi quyền SELECT của anon/authenticated và cung cấp dữ liệu qua view thường có security_invoker = true, hoặc chuyển sang schema không công khai qua API.',
+    ),
+    'public_bucket_listable': (
+        'Medium',
+        'Public Storage bucket allows listing all objects',
+        'Drop the broad SELECT policy on storage.objects; public files stay reachable by URL, and if listing is needed, restrict it to authenticated owners.',
+        'Bucket công khai có policy cho phép liệt kê toàn bộ tệp',
+        'Xóa policy SELECT quá rộng trên storage.objects; tệp trong bucket công khai vẫn tải được qua URL, và nếu cần liệt kê thì chỉ giới hạn cho chủ sở hữu đã xác thực.',
+    ),
     'anon_readable': (
         'High',
         'Rows readable without login',
@@ -115,6 +129,8 @@ SQL_RULES: tuple[str, ...] = (
     'policy_user_metadata',
     'policy_auth_per_row',
     'auth_users_exposed',
+    'matview_api_exposed',
+    'public_bucket_listable',
 )
 
 SEVERITIES: list[str] = ['Critical', 'High', 'Medium', 'Low']
@@ -180,11 +196,12 @@ RULE_GUIDES: dict[str, dict[str, str]] = {
         'why': (
             'A policy granted to anon or PUBLIC exists on a table whose name matches common sensitive '
             'patterns (users, profiles, orders, payments, invoices, customers, patients, secrets, tokens, '
-            'documents). Unauthenticated callers holding the public anon key may reach rows matched by the policy.'
+            'documents) or whose table comment contains the word "pii". Unauthenticated callers holding '
+            'the public anon key may reach rows matched by the policy.'
         ),
         'caveat': (
-            'Name-based heuristic. Public profile cards or public storefront documents may be intentional; '
-            'verify which columns and rows are actually exposed.'
+            'Name-based heuristic plus explicit COMMENT ON TABLE ... IS \'pii\' tagging. Public profile cards '
+            'or public storefront documents may be intentional; verify which columns and rows are actually exposed.'
         ),
         'example': (
             'ALTER POLICY "your_policy" ON public.profiles TO authenticated;\n'
@@ -326,6 +343,42 @@ RULE_GUIDES: dict[str, dict[str, str]] = {
             '-- Also remove inherited access where necessary.\n'
             '-- For materialized views, revoke access or drop the materialized view.\n'
             '-- Publish only needed profile columns from a separate table with appropriate RLS.'
+        ),
+    },
+    'matview_api_exposed': {
+        'source': 'SQL catalog check (check.sql)',
+        'why': (
+            'A materialized view or foreign table in public grants SELECT to anon or authenticated. '
+            'Row Level Security does not apply to materialized views or foreign tables, so every row '
+            'is readable through the Data API (/rest/v1/).'
+        ),
+        'caveat': (
+            'Public precomputed aggregates may be intentional, but any underlying sensitive columns or rows '
+            'stored in the materialized view or foreign table are readable in full by API callers. '
+            'Materialized views over auth.users also trigger auth_users_exposed.'
+        ),
+        'example': (
+            '-- Revoke direct API access and expose filtered rows through an invoker view, or move schemas:\n'
+            '-- REVOKE SELECT ON public.your_matview FROM PUBLIC, anon, authenticated;\n'
+            '-- ALTER MATERIALIZED VIEW public.your_matview SET SCHEMA private;'
+        ),
+    },
+    'public_bucket_listable': {
+        'source': 'SQL catalog check (check.sql)',
+        'why': (
+            'A Storage bucket marked public = true also has a SELECT or ALL policy on storage.objects '
+            'for anon or PUBLIC whose USING expression mentions that bucket id or is unconditionally true. '
+            'Public buckets serve files by URL without any policy; such a SELECT policy additionally lets '
+            'anyone list every file name in the bucket through the Storage API.'
+        ),
+        'caveat': (
+            'Intentional only if callers are meant to browse and enumerate all objects in the bucket without '
+            'authentication. Note that public_bucket also fires for the same bucket.'
+        ),
+        'example': (
+            '-- Drop the broad SELECT policy; public files stay reachable by direct URL:\n'
+            '-- DROP POLICY IF EXISTS "your_select_policy" ON storage.objects;\n'
+            '-- If listing is needed, restrict SELECT on storage.objects to authenticated owners.'
         ),
     },
     'anon_readable': {

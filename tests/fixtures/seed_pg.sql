@@ -1,5 +1,5 @@
 -- Seed fixture for PostgreSQL 15+ CI verification of src/supabase_rls_check/sql/check.sql.
--- Simulates Supabase roles, Auth, and storage.buckets; exercises all 11 catalog rules
+-- Simulates Supabase roles, Auth, and storage.buckets/objects; exercises all 13 catalog rules
 -- alongside hardened negative-control objects and mixed policy expressions.
 
 BEGIN;
@@ -22,7 +22,7 @@ CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$ SELECT NULL::u
 CREATE FUNCTION auth.jwt() RETURNS jsonb LANGUAGE sql STABLE AS $$ SELECT '{}'::jsonb $$;
 CREATE FUNCTION auth.role() RETURNS text LANGUAGE sql STABLE AS $$ SELECT 'authenticated'::text $$;
 
--- Mock Supabase Storage schema (rule: public_bucket + private control bucket)
+-- Mock Supabase Storage schema (rules: public_bucket, public_bucket_listable + controls)
 CREATE SCHEMA IF NOT EXISTS storage;
 
 CREATE TABLE storage.buckets (
@@ -31,9 +31,27 @@ CREATE TABLE storage.buckets (
   public boolean NOT NULL DEFAULT false
 );
 
+CREATE TABLE storage.objects (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  bucket_id text NOT NULL,
+  name text NOT NULL,
+  owner uuid
+);
+ALTER TABLE storage.objects ENABLE ROW LEVEL SECURITY;
+
 INSERT INTO storage.buckets (id, name, public) VALUES
   ('documents', 'documents', true),
-  ('private-backups', 'private-backups', false);
+  ('private-backups', 'private-backups', false),
+  ('avatars', 'avatars', true),
+  ('exports', 'exports', false);
+
+CREATE POLICY public_list_avatars ON storage.objects
+  FOR SELECT TO anon
+  USING (bucket_id = 'avatars');
+
+CREATE POLICY private_exports_select ON storage.objects
+  FOR SELECT TO anon
+  USING (bucket_id = 'exports');
 
 -- 1. public_extension: extension installed directly in public
 CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public;
@@ -54,7 +72,7 @@ CREATE POLICY allow_everyone ON public.profiles
   FOR SELECT TO authenticated
   USING (true);
 
--- 4. sensitive_anon_policy: anon role granted policy on sensitive table name
+-- 4. sensitive_anon_policy: anon role granted policy on sensitive table name or pii-tagged table
 CREATE TABLE public.payments (
   id uuid PRIMARY KEY,
   amount numeric(10, 2) NOT NULL
@@ -63,6 +81,25 @@ ALTER TABLE public.payments ENABLE ROW LEVEL SECURITY;
 CREATE POLICY anon_payments ON public.payments
   FOR SELECT TO anon
   USING (amount > 0);
+
+CREATE TABLE public.journal_entries (
+  id uuid PRIMARY KEY,
+  entry text NOT NULL
+);
+ALTER TABLE public.journal_entries ENABLE ROW LEVEL SECURITY;
+COMMENT ON TABLE public.journal_entries IS 'pii: patient notes';
+CREATE POLICY anon_journal ON public.journal_entries
+  FOR SELECT TO anon
+  USING (false);
+
+CREATE TABLE public.countries (
+  code text PRIMARY KEY,
+  name text NOT NULL
+);
+ALTER TABLE public.countries ENABLE ROW LEVEL SECURITY;
+CREATE POLICY anon_countries ON public.countries
+  FOR SELECT TO anon
+  USING (code IS NOT NULL);
 
 -- 5. definer_search_path: SECURITY DEFINER trigger function with no fixed search_path
 CREATE FUNCTION public.handle_new_user()
@@ -171,5 +208,14 @@ CREATE VIEW public.private_auth_directory AS SELECT id FROM auth.users;
 REVOKE ALL ON public.private_auth_directory FROM PUBLIC, anon, authenticated;
 CREATE MATERIALIZED VIEW public.private_auth_snapshot AS SELECT id FROM auth.users;
 REVOKE ALL ON public.private_auth_snapshot FROM PUBLIC, anon, authenticated;
+
+-- 12. matview_api_exposed: materialized view in public selectable by anon/authenticated
+CREATE MATERIALIZED VIEW public.sales_rollup AS
+  SELECT id, amount FROM public.payments;
+GRANT SELECT ON public.sales_rollup TO anon;
+
+CREATE MATERIALIZED VIEW public.internal_rollup AS
+  SELECT id, amount FROM public.payments;
+REVOKE ALL ON public.internal_rollup FROM PUBLIC, anon, authenticated;
 
 COMMIT;

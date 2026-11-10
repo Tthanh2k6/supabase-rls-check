@@ -61,6 +61,8 @@ def mock_http(monkeypatch, responses):
 
 def test_all_sql_checks_csv_json(tmp_path):
     result = audit.load_result(FIXTURE)
+    assert len(audit.SQL_RULES) == 13
+    assert {f['rule'] for f in result['findings']} == set(audit.SQL_RULES)
     assert {f['rule'] for f in result['findings']} == set(audit.RULES) - {'anon_readable', 'service_role_exposed'}
     path = tmp_path / 'export.json'
     path.write_text(json.dumps(result['findings']), encoding='utf-8')
@@ -313,8 +315,8 @@ def test_sql_print_bundled_check_query(capsys):
 
 def test_mcp_core_analyze_and_explain_without_sdk(tmp_path):
     summary = mcp_server.analyze_sql_export(str(FIXTURE))
-    assert summary['total_findings'] == 19
-    assert summary['counts'] == {'Critical': 2, 'High': 10, 'Medium': 1, 'Low': 6}
+    assert summary['total_findings'] == 24
+    assert summary['counts'] == {'Critical': 2, 'High': 13, 'Medium': 3, 'Low': 6}
     assert {item['rule'] for item in summary['findings']} == set(audit.SQL_RULES)
     assert 'ROLLBACK;' in summary['fix_sql']
 
@@ -399,9 +401,13 @@ def test_probe_without_any_key_fails(monkeypatch):
     ('policy_user_metadata', 'High'),
     ('policy_auth_per_row', 'Low'),
     ('auth_users_exposed', 'Critical'),
+    ('matview_api_exposed', 'High'),
+    ('public_bucket_listable', 'Medium'),
 ])
 def test_new_catalog_rule_reports_and_manual_fixes(tmp_path, lang, rule, severity):
-    item = audit.finding(rule, 'public', 'review_target', 'review_policy' if rule != 'auth_users_exposed' else '')
+    schema = 'storage' if rule == 'public_bucket_listable' else 'public'
+    policy = '' if rule in ('auth_users_exposed', 'matview_api_exposed') else 'review_policy'
+    item = audit.finding(rule, schema, 'review_target', policy)
     result = {'findings': [item], 'notes': [], 'observations': []}
     audit.report([result], tmp_path, lang=lang)
     title, remedy = audit.RULES[rule][3:5] if lang == 'vi' else audit.RULES[rule][1:3]
@@ -412,11 +418,11 @@ def test_new_catalog_rule_reports_and_manual_fixes(tmp_path, lang, rule, severit
         assert title in content
         assert remedy in content
         assert severity_label in content
-        assert 'public.review_target' in content
+        assert f'{schema}.review_target' in content
         if item['policy_name']:
             assert item['policy_name'] in content
     sql = (tmp_path / 'fix.sql').read_text(encoding='utf-8')
-    assert f'-- {rule}: public.review_target' in sql
+    assert f'-- {rule}: {schema}.review_target' in sql
     assert f'-- {remedy}' in sql
     # These rules must never introduce executable fixes, even inside the rollback template.
     statements = [line for line in sql.splitlines() if line and not line.startswith('--')]
@@ -430,6 +436,8 @@ def test_new_catalog_rule_reports_and_manual_fixes(tmp_path, lang, rule, severit
     ('policy_user_metadata', 'High', 'End users can edit', 'app_metadata'),
     ('policy_auth_per_row', 'Low', 'not a vulnerability', '(select auth.uid())'),
     ('auth_users_exposed', 'Critical', 'materialized view', 'revoke SELECT'),
+    ('matview_api_exposed', 'High', 'Row Level Security does not apply', 'security_invoker = true'),
+    ('public_bucket_listable', 'Medium', 'Public buckets serve files by URL', 'storage.objects'),
 ])
 def test_new_catalog_rule_explanations_and_mcp(rule, severity, explanation, remedy):
     text = audit.explain_rule(rule)

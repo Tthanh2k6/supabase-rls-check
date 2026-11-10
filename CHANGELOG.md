@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-11-10
+
+### Added
+- Two read-only catalog rules: `matview_api_exposed` (High) for materialized views or foreign tables in `public` selectable by `anon`/`authenticated`, and `public_bucket_listable` (Medium) for public Storage buckets paired with a broad `anon`/`public` `SELECT` policy on `storage.objects`, bringing the catalog total to 13 checks.
+- `pii` table-comment tag support (`COMMENT ON TABLE public.x IS 'pii'`) in `sensitive_anon_policy` alongside the existing table-name regex (idea from a reader comment on the dev.to article).
+- English and Vietnamese titles/remediation, CLI and MCP explanations, HTML/Markdown report rendering, comment-only `fix.sql` guidance, and PostgreSQL 15 fixtures/tests for the new rules and `pii` table tag (24 expected catalog findings, 74 unit tests).
+
 ## [0.2.2] - 2026-11-10
 
 ### Changed
