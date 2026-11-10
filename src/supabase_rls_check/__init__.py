@@ -1,12 +1,14 @@
 """Consent-gated, read-only Supabase RLS, policy, and anonymous exposure checks."""
 from __future__ import annotations
 
-__version__ = '0.3.0'
+__version__ = '0.4.0'
 
 from .cli import build_parser, main
+from .envscan import PUBLIC_PREFIXES, format_envscan_table, mask_secret, scan_env
 from .probe import Scripts, fetch, jwt_role, probe, scan_site, validate_url
 from .report import deduplicate_and_sort_findings, fix_sql, quote_identifier, report
 from .rules import (
+    ENV_RULES,
     JWT,
     NOTES,
     RULE_GUIDES,
@@ -23,8 +25,10 @@ from .rules import (
 )
 
 __all__ = [
+    'ENV_RULES',
     'JWT',
     'NOTES',
+    'PUBLIC_PREFIXES',
     'RULES',
     'RULE_GUIDES',
     'SEVERITIES',
@@ -39,14 +43,17 @@ __all__ = [
     'fetch',
     'finding',
     'fix_sql',
+    'format_envscan_table',
     'get_check_sql_path',
     'jwt_role',
     'load_result',
     'main',
+    'mask_secret',
     'probe',
     'quote_identifier',
     'read_check_sql',
     'report',
+    'scan_env',
     'scan_site',
     'validate_url',
 ]

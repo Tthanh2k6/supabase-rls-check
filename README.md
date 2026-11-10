@@ -85,6 +85,23 @@ This writes three files to `review_out/`:
 
 Add `--lang vi` to generate Vietnamese report text.
 
+### Scan your app for secrets in public env variables
+
+Scan a local project directory (read-only, local files only, no network) for `service_role` JWTs, `sb_secret_` keys, and live API secrets exposed through client-bundled environment variables (`EXPO_PUBLIC_`, `NEXT_PUBLIC_`, `VITE_`, `REACT_APP_`, `PUBLIC_`, `NUXT_PUBLIC_`) or hardcoded in client source files:
+
+```bash
+supabase-rls-check scan-env . --out envscan.json
+supabase-rls-check report \
+  --from sql_results.json envscan.json \
+  --out-dir review_out \
+  --project "My Supabase App" \
+  --i-own-this-project
+```
+
+- Inspects `.env`, `.env.*`, `app.json`, `app.config.*`, `eas.json`, and client source files (`*.js`, `*.jsx`, `*.ts`, `*.tsx`, `*.mjs`, `*.cjs`, `*.vue`, `*.svelte`), skipping `node_modules`, `.git`, virtualenvs, build outputs, binary files, and files over 2 MB.
+- Emits `public_env_service_role` (**Critical**), `public_env_secret_key` (**High**), and `service_role_in_client_code` (**Critical**, excluding `supabase/functions/`, `server/`, `api/`, `scripts/`, and `backend/`).
+- Requires no consent flag because it only reads local files, and always masks secret values (`first 6 chars + … + last 4`).
+
 ### Explaining a rule and optional MCP mode
 
 Inspect the rationale, caveats, and remediation example for any rule without touching a target project:
@@ -100,7 +117,7 @@ If installed with `supabase-rls-check[mcp]`, start the local stdio MCP server:
 supabase-rls-check mcp
 ```
 
-The MCP server exposes only two local, read-only tools: `analyze_sql_export(path)` and `explain_rule(rule)`. Network probing is intentionally excluded from MCP so AI clients never handle API keys or send HTTP requests through this tool.
+The MCP server exposes only three local, read-only tools: `analyze_sql_export(path)`, `explain_rule(rule)`, and `scan_public_env(path)`. Network probing is intentionally excluded from MCP so AI clients never handle API keys or send HTTP requests through this tool.
 
 ## Run it in CI (GitHub Action)
 
@@ -140,7 +157,7 @@ supabase-rls-check report --from demo/todo_ai.csv --out-dir demo --project "todo
 supabase-rls-check report --from demo/todo_ai.csv --out-dir demo/vi --project "todo-ai (dữ liệu giả)" --lang vi --i-own-this-project
 ```
 
-## Thirteen checks: SQL catalog rules
+## Fourteen checks: SQL catalog rules
 
 `check.sql` inspects PostgreSQL 15+ system catalogs and `storage.buckets` in a single read-only CTE query:
 
@@ -159,8 +176,9 @@ supabase-rls-check report --from demo/todo_ai.csv --out-dir demo/vi --project "t
 | `policy_auth_per_row` | Low | Policy on an RLS-enabled table in `public` calls `auth.uid()`, `auth.jwt()`, `auth.role()`, or `current_setting()` without a sub-select. Performance finding: use `(select auth.uid())` for row-independent calls. |
 | `auth_users_exposed` | Critical | Public view directly depends on `auth.users`, allows `anon` or `authenticated` to SELECT, and is materialized or lacks `security_invoker`. Drop it or harden a regular view and revoke access; publish only needed profile columns from a separate table. |
 | `matview_api_exposed` | High | Materialized view or foreign table in `public` allows `anon` or `authenticated` to `SELECT`. Row Level Security does not apply to materialized views, so every row is readable through the Data API. Revoke `SELECT` from `anon`/`authenticated` and serve the data through a regular view with `security_invoker = true`, or move it to a schema the API does not expose. |
+| `policy_any_authenticated` | Medium | Policy in `public` only checks that the caller is signed in (`auth.role() = 'authenticated'` or `auth.uid() IS NOT NULL`), giving every signed-in account the same access. Tie the row to `(select auth.uid()) = user_id` or a membership table, or document intentional shared access in a table comment. |
 
-The five newer rules (`policy_user_metadata`, `policy_auth_per_row`, `auth_users_exposed`, `matview_api_exposed`, and `public_bucket_listable`) add only commented guidance to `fix.sql`; they never generate automatic DDL. You can also tag tables with `COMMENT ON TABLE public.x IS 'pii'` so `sensitive_anon_policy` does not depend on table naming (idea from a reader comment on the dev.to article). Overlap is intentional: a materialized view over `auth.users` produces both `auth_users_exposed` and `matview_api_exposed` (same as regular views over `auth.users` overlap with `view_not_invoker`, and listable public buckets produce both `public_bucket` and `public_bucket_listable`). Policy expression checks are heuristics over PostgreSQL's deparsed SQL. The authentication performance check recognizes directly SELECT-wrapped calls; complex subqueries need manual review. The Auth exposure check follows direct dependencies and returns no findings when `auth.users` is absent.
+The six newer rules (`policy_user_metadata`, `policy_auth_per_row`, `auth_users_exposed`, `matview_api_exposed`, `public_bucket_listable`, and `policy_any_authenticated`) add only commented guidance to `fix.sql`; they never generate automatic DDL. You can also tag tables with `COMMENT ON TABLE public.x IS 'pii'` so `sensitive_anon_policy` does not depend on table naming (idea from a reader comment on the dev.to article). Overlap is intentional: a materialized view over `auth.users` produces both `auth_users_exposed` and `matview_api_exposed` (same as regular views over `auth.users` overlap with `view_not_invoker`, and listable public buckets produce both `public_bucket` and `public_bucket_listable`). Policy expression checks are heuristics over PostgreSQL's deparsed SQL. The authentication performance check recognizes directly SELECT-wrapped calls; complex subqueries need manual review. The Auth exposure check follows direct dependencies and returns no findings when `auth.users` is absent.
 
 ### Additional checks from `probe`
 
@@ -173,8 +191,8 @@ Tip: pass the anon key through the `SUPABASE_ANON_KEY` environment variable inst
 
 ## How it is tested
 
-- **74 unit tests** (`pytest`): consent flag enforcement, GET/HEAD-only probing with no redirects, response size limits, row values and keys never written to disk, `service_role` JWT detection, HTML/SQL escaping in reports, identifier quoting in `fix.sql`, English and Vietnamese output, all 13 catalog rules in reports/explanations, comment-only fixes for the newer rules, and the MCP tool surface (no `probe` exposed).
-- **Catalog query on a real PostgreSQL 15** (GitHub Actions): `tests/fixtures/seed_pg.sql` plants issues for all 13 rules next to safe controls. CI compares all 24 expected findings exactly, including overlapping view/matview and bucket findings, and rejects extra or missing rows. Cases cover both JWT sources, all four authentication helpers, mixed wrapped/unwrapped calls, materialized views, public bucket listing policies, `pii` table comments, role grants, and safe `app_metadata`/sub-select/invoker controls. The query runs with read-only transactions, including separate cases without an `auth` schema or `auth.users` table.
+- **Unit tests** (`pytest`): consent flag enforcement, GET/HEAD-only probing with no redirects, response size limits, row values and keys never written to disk, `service_role` JWT detection, local `scan-env` secret detection with masked values, HTML/SQL escaping in reports, identifier quoting in `fix.sql`, English and Vietnamese output, all 14 catalog rules in reports/explanations, comment-only fixes for the newer rules, and the MCP tool surface (no `probe` exposed).
+- **Catalog query on a real PostgreSQL 15** (GitHub Actions): `tests/fixtures/seed_pg.sql` plants issues for all 14 rules next to safe controls. CI compares all 26 expected findings exactly, including overlapping view/matview and bucket findings, and rejects extra or missing rows. Cases cover both JWT sources, all four authentication helpers, mixed wrapped/unwrapped calls, signed-in-only policies, materialized views, public bucket listing policies, `pii` table comments, role grants, and safe `app_metadata`/sub-select/invoker controls. The query runs with read-only transactions, including separate cases without an `auth` schema or `auth.users` table.
 - **Abuse cases checked by hand**: running any command without `--i-own-this-project` exits before touching the network; passing a `service_role` key to `probe` is refused; the MCP server cannot reach the network.
 
 ## Ethical boundaries

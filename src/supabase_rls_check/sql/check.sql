@@ -129,6 +129,27 @@ WITH policy_expressions AS (
      OR regexp_replace(coalesce(p.qual, ''), '[()[:space:]]', '', 'g') = 'true'
    )
   WHERE b.public = true
+  UNION ALL
+  SELECT DISTINCT 'policy_any_authenticated', schemaname::text, tablename::text, policyname::text
+  FROM policy_expressions
+  WHERE lower(
+          regexp_replace(
+            regexp_replace(
+              regexp_replace(
+                regexp_replace(expression, '::[[:space:]]*text\M', '', 'gi'),
+                '\mSELECT[[:space:]]+',
+                '',
+                'gi'
+              ),
+              '[[:space:]]+AS[[:space:]]+[[:alnum:]_]+\M',
+              '',
+              'gi'
+            ),
+            '[()[:space:]]',
+            '',
+            'g'
+          )
+        ) IN ('auth.role()=''authenticated''', 'auth.uid()isnotnull')
 )
 SELECT rule, schema_name, object_name, policy_name FROM findings
 ORDER BY rule, schema_name, object_name, policy_name;
