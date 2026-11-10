@@ -198,7 +198,10 @@ This tool is a configuration and anonymous-read review aid, **not a penetration 
 
 ## Need a human review?
 
-Need a manual review of RLS policies, `SECURITY DEFINER` function bodies, and two-user staging isolation? Book a fixed-scope review here: https://contra.com/s/sFUXWqOZ-supabase-security-check-for-lovable-bolt-and-v0-apps
+Need a manual review of RLS policies, `SECURITY DEFINER` function bodies, and two-user staging isolation? Book a fixed-scope review (from $69, report plus a ROLLBACK-wrapped fix script):
+
+- Upwork: https://www.upwork.com/services/product/2119987807643160130
+- Contra: https://contra.com/s/sFUXWqOZ-supabase-security-check-for-lovable-bolt-and-v0-apps
 
 ## License
 
