@@ -59,7 +59,13 @@ def fix_sql(findings: Sequence[dict[str, Any]], lang: str = 'en') -> str:
             '--   WITH CHECK ((SELECT auth.uid()) = user_id);',
         ]
     for f in findings:
-        if f['rule'] in ('policy_user_metadata', 'policy_auth_per_row', 'auth_users_exposed'):
+        if f['rule'] in (
+            'policy_user_metadata',
+            'policy_auth_per_row',
+            'auth_users_exposed',
+            'matview_api_exposed',
+            'public_bucket_listable',
+        ):
             target = clean(f['schema_name']) + '.' + clean(f['object_name'])
             policy = ': ' + clean(f['policy_name']) if f['policy_name'] else ''
             remedy = RULES[f['rule']][4 if lang == 'vi' else 2]

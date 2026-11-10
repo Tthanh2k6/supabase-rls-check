@@ -93,6 +93,8 @@ jobs:
               ("auth_users_exposed", "public", "auth_snapshot", ""),
               ("definer_anon_exec", "public", "create_order(uuid)", ""),
               ("definer_search_path", "public", "handle_new_user()", ""),
+              ("matview_api_exposed", "public", "auth_snapshot", ""),
+              ("matview_api_exposed", "public", "sales_rollup", ""),
               ("policy_auth_per_row", "public", "notes", "mixed_auth_calls"),
               ("policy_auth_per_row", "public", "notes", "per_row_jwt"),
               ("policy_auth_per_row", "public", "notes", "per_row_role"),
@@ -101,9 +103,12 @@ jobs:
               ("policy_true", "public", "profiles", "allow_everyone"),
               ("policy_user_metadata", "public", "notes", "metadata_claims"),
               ("policy_user_metadata", "public", "notes", "metadata_jwt"),
+              ("public_bucket", "storage", "avatars", ""),
               ("public_bucket", "storage", "documents", ""),
+              ("public_bucket_listable", "storage", "avatars", "public_list_avatars"),
               ("public_extension", "public", "pg_trgm", ""),
               ("rls_disabled", "public", "todos", ""),
+              ("sensitive_anon_policy", "public", "journal_entries", "anon_journal"),
               ("sensitive_anon_policy", "public", "payments", "anon_payments"),
               ("view_not_invoker", "public", "auth_directory", ""),
               ("view_not_invoker", "public", "customer_summary", ""),
@@ -121,7 +126,7 @@ jobs:
       - name: Check catalogs without auth schema or auth.users
         run: |
           psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE supabase_no_auth'
-          psql -h 127.0.0.1 -U postgres -d supabase_no_auth -v ON_ERROR_STOP=1 -c 'CREATE SCHEMA storage; CREATE TABLE storage.buckets (name text, public boolean)'
+          psql -h 127.0.0.1 -U postgres -d supabase_no_auth -v ON_ERROR_STOP=1 -c 'CREATE SCHEMA storage; CREATE TABLE storage.buckets (id text, name text, public boolean)'
           PGOPTIONS='-c default_transaction_read_only=on' psql -h 127.0.0.1 -U postgres -d supabase_no_auth -v ON_ERROR_STOP=1 --csv -f src/supabase_rls_check/sql/check.sql > /tmp/no_auth_findings.csv
           psql -h 127.0.0.1 -U postgres -d supabase_no_auth -v ON_ERROR_STOP=1 -c 'CREATE SCHEMA auth'
           PGOPTIONS='-c default_transaction_read_only=on' psql -h 127.0.0.1 -U postgres -d supabase_no_auth -v ON_ERROR_STOP=1 --csv -f src/supabase_rls_check/sql/check.sql > /tmp/no_users_findings.csv

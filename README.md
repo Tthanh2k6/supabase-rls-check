@@ -140,7 +140,7 @@ supabase-rls-check report --from demo/todo_ai.csv --out-dir demo --project "todo
 supabase-rls-check report --from demo/todo_ai.csv --out-dir demo/vi --project "todo-ai (dữ liệu giả)" --lang vi --i-own-this-project
 ```
 
-## Eleven checks: SQL catalog rules
+## Thirteen checks: SQL catalog rules
 
 `check.sql` inspects PostgreSQL 15+ system catalogs and `storage.buckets` in a single read-only CTE query:
 
@@ -148,17 +148,19 @@ supabase-rls-check report --from demo/todo_ai.csv --out-dir demo/vi --project "t
 | --- | --- | --- |
 | `rls_disabled` | High | Table or partitioned table in `public` has Row Level Security disabled (`relrowsecurity = false`). |
 | `policy_true` | High | Policy in `public` has an unconditional `USING (true)` or `WITH CHECK (true)` expression. |
-| `sensitive_anon_policy` | High | Policy granted to `anon` or `public` on a table matching common sensitive names (`user`, `profile`, `order`, `payment`, `invoice`, `customer`, `patient`, `secret`, `token`, `document`). |
+| `sensitive_anon_policy` | High | Policy granted to `anon` or `public` on a table matching common sensitive names (`user`, `profile`, `order`, `payment`, `invoice`, `customer`, `patient`, `secret`, `token`, `document`) or tagged with a `pii` table comment. |
 | `definer_anon_exec` | High | Non-trigger `SECURITY DEFINER` function in `public` is executable by `anon` (callable via `/rest/v1/rpc/*`). |
 | `definer_search_path` | High | `SECURITY DEFINER` function in `public` has no fixed `search_path` set on the function definition. |
 | `view_not_invoker` | High | View in `public` does not enable `security_invoker`, so base-table queries run with view-owner privileges. |
 | `public_bucket` | Medium | Supabase Storage bucket in `storage.buckets` is marked `public = true`. |
+| `public_bucket_listable` | Medium | Public Storage bucket in `storage.buckets` also has an `anon` or `public` `SELECT` (or `ALL`) policy on `storage.objects` matching that bucket id or `true`, letting anyone list every file name in the bucket through the API. |
 | `public_extension` | Low | PostgreSQL extension is installed directly in `public` rather than a dedicated `extensions` schema. |
 | `policy_user_metadata` | High | Policy in `public` reads user-editable `user_metadata` from `auth.jwt()` or `request.jwt.claims`. Use server-managed `app_metadata` or a protected authorization table. |
 | `policy_auth_per_row` | Low | Policy on an RLS-enabled table in `public` calls `auth.uid()`, `auth.jwt()`, `auth.role()`, or `current_setting()` without a sub-select. Performance finding: use `(select auth.uid())` for row-independent calls. |
 | `auth_users_exposed` | Critical | Public view directly depends on `auth.users`, allows `anon` or `authenticated` to SELECT, and is materialized or lacks `security_invoker`. Drop it or harden a regular view and revoke access; publish only needed profile columns from a separate table. |
+| `matview_api_exposed` | High | Materialized view or foreign table in `public` allows `anon` or `authenticated` to `SELECT`. Row Level Security does not apply to materialized views, so every row is readable through the Data API. Revoke `SELECT` from `anon`/`authenticated` and serve the data through a regular view with `security_invoker = true`, or move it to a schema the API does not expose. |
 
-The three new rules add only commented guidance to `fix.sql`; they never generate automatic DDL. Policy expression checks are heuristics over PostgreSQL's deparsed SQL. The authentication performance check recognizes directly SELECT-wrapped calls; complex subqueries need manual review. The Auth exposure check follows direct dependencies and returns no findings when `auth.users` is absent.
+The five newer rules (`policy_user_metadata`, `policy_auth_per_row`, `auth_users_exposed`, `matview_api_exposed`, and `public_bucket_listable`) add only commented guidance to `fix.sql`; they never generate automatic DDL. You can also tag tables with `COMMENT ON TABLE public.x IS 'pii'` so `sensitive_anon_policy` does not depend on table naming (idea from a reader comment on the dev.to article). Overlap is intentional: a materialized view over `auth.users` produces both `auth_users_exposed` and `matview_api_exposed` (same as regular views over `auth.users` overlap with `view_not_invoker`, and listable public buckets produce both `public_bucket` and `public_bucket_listable`). Policy expression checks are heuristics over PostgreSQL's deparsed SQL. The authentication performance check recognizes directly SELECT-wrapped calls; complex subqueries need manual review. The Auth exposure check follows direct dependencies and returns no findings when `auth.users` is absent.
 
 ### Additional checks from `probe`
 
@@ -171,8 +173,8 @@ Tip: pass the anon key through the `SUPABASE_ANON_KEY` environment variable inst
 
 ## How it is tested
 
-- **66 unit tests** (`pytest`): consent flag enforcement, GET/HEAD-only probing with no redirects, response size limits, row values and keys never written to disk, `service_role` JWT detection, HTML/SQL escaping in reports, identifier quoting in `fix.sql`, English and Vietnamese output, all 11 catalog rules in reports/explanations, comment-only fixes for the new rules, and the MCP tool surface (no `probe` exposed).
-- **Catalog query on a real PostgreSQL 15** (GitHub Actions): `tests/fixtures/seed_pg.sql` plants issues for all 11 rules next to safe controls. CI compares all 19 expected findings exactly, including overlapping view findings, and rejects extra or missing rows. Cases cover both JWT sources, all four authentication helpers, mixed wrapped/unwrapped calls, materialized views, role grants, and safe `app_metadata`/sub-select/invoker controls. The query runs with read-only transactions, including separate cases without an `auth` schema or `auth.users` table.
+- **74 unit tests** (`pytest`): consent flag enforcement, GET/HEAD-only probing with no redirects, response size limits, row values and keys never written to disk, `service_role` JWT detection, HTML/SQL escaping in reports, identifier quoting in `fix.sql`, English and Vietnamese output, all 13 catalog rules in reports/explanations, comment-only fixes for the newer rules, and the MCP tool surface (no `probe` exposed).
+- **Catalog query on a real PostgreSQL 15** (GitHub Actions): `tests/fixtures/seed_pg.sql` plants issues for all 13 rules next to safe controls. CI compares all 24 expected findings exactly, including overlapping view/matview and bucket findings, and rejects extra or missing rows. Cases cover both JWT sources, all four authentication helpers, mixed wrapped/unwrapped calls, materialized views, public bucket listing policies, `pii` table comments, role grants, and safe `app_metadata`/sub-select/invoker controls. The query runs with read-only transactions, including separate cases without an `auth` schema or `auth.users` table.
 - **Abuse cases checked by hand**: running any command without `--i-own-this-project` exits before touching the network; passing a `service_role` key to `probe` is refused; the MCP server cannot reach the network.
 
 ## Ethical boundaries

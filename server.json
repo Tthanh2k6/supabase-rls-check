@@ -6,12 +6,12 @@
     "url": "https://github.com/Tthanh2k6/supabase-rls-check",
     "source": "github"
   },
-  "version": "0.2.2",
+  "version": "0.3.0",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "supabase-rls-check",
-      "version": "0.2.2",
+      "version": "0.3.0",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
