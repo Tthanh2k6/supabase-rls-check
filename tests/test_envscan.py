@@ -61,7 +61,8 @@ def test_vite_stripe_live_key_is_high(tmp_path):
     assert item['file'] == '.env.production'
     assert item['line'] == 1
     assert item['variable'] == 'VITE_STRIPE_KEY'
-    assert item['masked_value'] == f'{secret[:6]}…{secret[-4:]}'
+    assert item['masked_value'] == f'{secret[:2]}…{secret[-2:]}'
+    assert secret not in item['masked_value']
     assert secret not in item['masked_value']
     assert secret not in json.dumps(result)
 
