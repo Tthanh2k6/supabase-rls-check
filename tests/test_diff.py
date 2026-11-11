@@ -193,3 +193,59 @@ def test_mcp_diff_results_tool(tmp_path):
     with pytest.raises(ValueError) as exc:
         mcp_server.diff_results(str(old_path), str(bad_file))
     assert 'SECRET_TOKEN_123' not in str(exc.value)
+
+
+def test_diff_failure_injection_pii_comment_and_identical_csv(tmp_path, capsys):
+    csv_one = tmp_path / 'run1.csv'
+    csv_two = tmp_path / 'run2.csv'
+    csv_one.write_text(
+        'rule,schema_name,object_name,policy_name,basis\n'
+        'rls_disabled,public,todos,,\n'
+        "sensitive_anon_policy,public,payments,anon_payments,table name matches pattern 'payment'\n",
+        encoding='utf-8',
+    )
+    csv_two.write_text(
+        'rule,schema_name,object_name,policy_name,basis\n'
+        'rls_disabled,public,todos,,\n'
+        "sensitive_anon_policy,public,payments,anon_payments,table comment tag 'pii'\n"
+        "sensitive_anon_policy,public,journal_entries,anon_journal,table comment tag 'pii'\n",
+        encoding='utf-8',
+    )
+
+    # Identical CSV runs produce empty new/resolved and exit 0
+    same = diff_mod.diff_findings(csv_one, csv_one)
+    assert same == {'new': [], 'resolved': [], 'unchanged_count': 2}
+    assert audit.main(['diff', '--old', str(csv_one), '--new', str(csv_one), '--fail-on-new', 'high']) == 0
+    capsys.readouterr()
+
+    # Adding a pii comment tag between runs shows up as NEW (and old basis as resolved) and exits 1 on --fail-on-new high
+    diff_res = diff_mod.diff_findings(csv_one, csv_two)
+    assert set(diff_res.keys()) == {'new', 'resolved', 'unchanged_count'}
+    assert diff_res['unchanged_count'] == 1
+    assert [f['basis'] for f in diff_res['new']] == ["table comment tag 'pii'", "table comment tag 'pii'"]
+    assert [f['basis'] for f in diff_res['resolved']] == ["table name matches pattern 'payment'"]
+
+    rc = audit.main(['diff', '--old', str(csv_one), '--new', str(csv_two), '--fail-on-new', 'high'])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "table comment tag 'pii'" in out
+    assert "table name matches pattern 'payment'" in out
+
+
+def test_diff_backward_compatibility_without_basis(tmp_path):
+    legacy_old = tmp_path / 'legacy_old.json'
+    legacy_old.write_text(
+        json.dumps(
+            {
+                'findings': [
+                    {'rule': 'rls_disabled', 'schema_name': 'public', 'object_name': 'todos', 'policy_name': ''}
+                ],
+                'notes': [],
+                'observations': [],
+            }
+        ),
+        encoding='utf-8',
+    )
+    current_new = _write_json(tmp_path / 'current_new.json', [audit.finding('rls_disabled', 'public', 'todos')])
+    res = diff_mod.diff_findings(legacy_old, current_new)
+    assert res == {'new': [], 'resolved': [], 'unchanged_count': 1}

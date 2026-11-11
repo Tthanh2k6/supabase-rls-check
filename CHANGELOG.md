@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-11-11
+
+### Added
+- Optional `basis` field on SQL catalog findings explaining why a rule/severity applied (for example `table name matches pattern 'payment'` or `table comment tag 'pii'` on `sensitive_anon_policy`, the column name on `secret_column_exposed`, and the argument name(s) on `definer_trusts_id_arg`), shown across text/Markdown/HTML reports, JSON output, MCP `analyze_sql_export`, and `diff` identity keys `(rule, schema_name, object_name, policy_name, basis)` while keeping backward compatibility with older JSON files (idea from a dev.to reader comment).
+- Two read-only catalog rules: `secret_column_exposed` (Medium) for tables in `public` with a secret-like column name (`api_key`, `apikey`, `secret`, `client_secret`, `access_token`, `refresh_token`, `private_key`, `password` exact or suffix) selectable by `anon` or `authenticated`, and `definer_trusts_id_arg` (Medium, review needed) for `SECURITY DEFINER` functions in `public` executable by `anon` or `authenticated` that take an `_id` or `uid`/`user`/`org`/`tenant` argument without referencing `auth.uid()` or `auth.jwt()` in `prosrc`, bringing the catalog total to 17 checks (ideas from dev.to articles and reader comments).
+- `agent_config_secret` (Critical) in `scan-env` and `scan_public_env(path)` to scan `.claude/settings.json`, `.claude/settings.local.json`, `.cursor/mcp.json`, `.mcp.json`, and `.vscode/mcp.json` (with JSON key paths when valid JSON and text fallback when invalid) for `sb_secret_` keys, `service_role` JWTs, and PostgreSQL connection strings with inline passwords, masking all secret values.
+- English and Vietnamese titles/remediation, `explain` guides, comment-only `fix.sql` guidance, PostgreSQL 15 fixtures (31 expected catalog findings), and unit tests for `basis` failure-injection diffs, `secret_column_exposed`, `definer_trusts_id_arg`, and `agent_config_secret`.
+
+### Fixed
+- The JWT pattern used to redact tokens from finding metadata now matches only real JWTs (`eyJ...` header). The old pattern also matched any `a.b.c` text, which redacted file paths such as `.claude/settings.local.json` and dotted JSON key paths.
+
 ## [0.5.0] - 2026-11-10
 
 ### Added

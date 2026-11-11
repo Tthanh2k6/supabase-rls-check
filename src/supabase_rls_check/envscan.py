@@ -1,6 +1,7 @@
 """Local, read-only scanner for secrets in public environment variables and client source code."""
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import re
@@ -59,11 +60,20 @@ SERVER_PATH_PREFIXES: tuple[str, ...] = (
     'backend/',
 )
 
+AGENT_CONFIG_SUFFIXES: tuple[str, ...] = (
+    '.claude/settings.json',
+    '.claude/settings.local.json',
+    '.cursor/mcp.json',
+    '.mcp.json',
+    '.vscode/mcp.json',
+)
+
 ENV_LINE_RE = re.compile(r'^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$')
 PUBLIC_VAR_IN_CODE_RE = re.compile(
     r'''["']?\b((?:EXPO_PUBLIC_|NEXT_PUBLIC_|VITE_|REACT_APP_|PUBLIC_|NUXT_PUBLIC_)[A-Za-z0-9_]*)\b["']?\s*[:=]\s*["'`]([^"'`\r\n]+)["'`]'''
 )
 SB_SECRET_RE = re.compile(r'\bsb_secret_[A-Za-z0-9_-]+')
+POSTGRES_URL_RE = re.compile(r'\bpostgres(?:ql)?://[^:/@\s"\'`]+:([^@\s"\'`]+)@[^\s"\'`]+', re.IGNORECASE)
 CLIENT_VAR_ASSIGN_RE = re.compile(r'\b([A-Za-z_$][A-Za-z0-9_$]*)\s*[:=]\s*["\'`]')
 
 
@@ -90,6 +100,12 @@ def _is_config_file(name: str) -> bool:
 
 def _is_source_file(name: str) -> bool:
     return Path(name).suffix.lower() in SOURCE_EXTENSIONS
+
+
+def _is_agent_config_file(rel_posix_path: str) -> bool:
+    # Drop only a literal leading './'; str.lstrip('./') would also eat the dot in '.claude/'.
+    norm = rel_posix_path[2:] if rel_posix_path.startswith('./') else rel_posix_path
+    return any(norm == suffix or norm.endswith('/' + suffix) for suffix in AGENT_CONFIG_SUFFIXES)
 
 
 def _is_client_path(rel_posix_path: str) -> bool:
@@ -163,6 +179,77 @@ def _build_env_finding(
     )
 
 
+def _walk_json_strings(node: Any, prefix: str = '') -> list[tuple[str, str]]:
+    """Collect (json_key_path, string_value) pairs from parsed JSON data."""
+    items: list[tuple[str, str]] = []
+    if isinstance(node, dict):
+        for k, v in node.items():
+            key_str = str(k)
+            child_prefix = f'{prefix}.{key_str}' if prefix else key_str
+            items.extend(_walk_json_strings(v, child_prefix))
+    elif isinstance(node, list):
+        for idx, v in enumerate(node):
+            child_prefix = f'{prefix}[{idx}]' if prefix else f'[{idx}]'
+            items.extend(_walk_json_strings(v, child_prefix))
+    elif isinstance(node, str):
+        items.append((prefix, node))
+    return items
+
+
+def _extract_agent_secrets(text_value: str) -> list[tuple[str, str]]:
+    """Return (secret_token, reason) pairs found in an agent config string or line."""
+    matches: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for jwt_match in JWT.finditer(text_value):
+        tok = jwt_match.group()
+        if tok not in seen and jwt_role(tok) == 'service_role':
+            seen.add(tok)
+            matches.append((tok, 'service_role JWT'))
+    for sb_match in SB_SECRET_RE.finditer(text_value):
+        tok = sb_match.group()
+        if tok not in seen:
+            seen.add(tok)
+            matches.append((tok, 'sb_secret_ key'))
+    for pg_match in POSTGRES_URL_RE.finditer(text_value):
+        tok = pg_match.group()
+        pw = pg_match.group(1)
+        if tok not in seen:
+            seen.add(tok)
+            secret_val = pw if pw in mask_secret(tok) else tok
+            matches.append((secret_val, 'Postgres connection string'))
+    return matches
+
+
+def _find_token_line(lines: list[str], token: str) -> int:
+    for line_no, line in enumerate(lines, start=1):
+        if token in line:
+            return line_no
+    return 1
+
+
+def _scan_agent_config(rel_path: str, text: str) -> list[dict[str, Any]]:
+    """Parse an agent/MCP JSON config file (falling back to text search on invalid JSON)."""
+    lines = text.splitlines()
+    results: list[dict[str, Any]] = []
+    try:
+        parsed = json.loads(text)
+    except (ValueError, TypeError):
+        for line_no, line in enumerate(lines, start=1):
+            for tok, reason in _extract_agent_secrets(line):
+                results.append(
+                    _build_env_finding('agent_config_secret', rel_path, line_no, '', tok, reason)
+                )
+        return results
+
+    for key_path, str_val in _walk_json_strings(parsed):
+        for tok, reason in _extract_agent_secrets(str_val):
+            line_no = _find_token_line(lines, tok)
+            results.append(
+                _build_env_finding('agent_config_secret', rel_path, line_no, key_path, tok, reason)
+            )
+    return results
+
+
 def scan_env(path: str | Path) -> dict[str, Any]:
     """Walk a local project directory and scan public env variables and client files for secrets."""
     root = Path(path)
@@ -182,13 +269,15 @@ def scan_env(path: str | Path) -> dict[str, Any]:
         dirs[:] = kept_dirs
 
         for filename in sorted(files):
+            file_path = Path(dirpath) / filename
+            rel_path = file_path.relative_to(root).as_posix()
+            is_agent_cfg = _is_agent_config_file(rel_path)
             is_env = _is_env_file(filename)
             is_cfg = _is_config_file(filename)
             is_src = _is_source_file(filename)
-            if not (is_env or is_cfg or is_src):
+            if not (is_agent_cfg or is_env or is_cfg or is_src):
                 continue
 
-            file_path = Path(dirpath) / filename
             try:
                 if file_path.is_symlink() or file_path.stat().st_size > MAX_FILE_BYTES:
                     continue
@@ -201,7 +290,10 @@ def scan_env(path: str | Path) -> dict[str, Any]:
 
             text = raw.decode('utf-8', errors='replace')
             del raw
-            rel_path = file_path.relative_to(root).as_posix()
+
+            if is_agent_cfg:
+                findings.extend(_scan_agent_config(rel_path, text))
+                continue
 
             for line_no, line in enumerate(text.splitlines(), start=1):
                 matched_tokens_on_line: set[str] = set()

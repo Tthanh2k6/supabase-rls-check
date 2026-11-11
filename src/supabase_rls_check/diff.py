@@ -29,13 +29,21 @@ def _load_sources(
     return loaded
 
 
-def _finding_key(item: dict[str, Any]) -> tuple[str, str, str, str]:
-    """Return the canonical (rule, schema, object, policy) tuple for a finding."""
+def _normalize_finding(item: dict[str, Any]) -> dict[str, Any]:
+    """Ensure backward compatibility when reading old findings dicts without basis."""
+    if 'basis' in item and item['basis'] is not None:
+        return item
+    return {**item, 'basis': item.get('basis') or ''}
+
+
+def _finding_key(item: dict[str, Any]) -> tuple[str, str, str, str, str]:
+    """Return the canonical (rule, schema, object, policy, basis) tuple for a finding."""
     return (
         item['rule'],
         item.get('schema_name', ''),
         item.get('object_name', ''),
         item.get('policy_name', ''),
+        item.get('basis') or '',
     )
 
 
@@ -43,12 +51,20 @@ def diff_findings(
     old_sources: str | Path | Sequence[str | Path | dict[str, Any]],
     new_sources: str | Path | Sequence[str | Path | dict[str, Any]],
 ) -> dict[str, Any]:
-    """Compare old and new finding sources keyed and sorted by (rule, schema, object, policy)."""
+    """Compare old and new finding sources keyed and sorted by (rule, schema, object, policy, basis)."""
     old_envelopes = _load_sources(old_sources)
     new_envelopes = _load_sources(new_sources)
 
-    old_by_key = {_finding_key(f): f for env in old_envelopes for f in env['findings']}
-    new_by_key = {_finding_key(f): f for env in new_envelopes for f in env['findings']}
+    old_by_key = {
+        _finding_key(f): _normalize_finding(f)
+        for env in old_envelopes
+        for f in env['findings']
+    }
+    new_by_key = {
+        _finding_key(f): _normalize_finding(f)
+        for env in new_envelopes
+        for f in env['findings']
+    }
 
     old_keys = set(old_by_key)
     new_keys = set(new_by_key)
@@ -89,21 +105,22 @@ def format_diff_table(result: dict[str, Any]) -> str:
 
     if not new_items and not resolved_items:
         return (
-            'Status  Severity  Rule  Object  Policy\n'
-            '------  --------  ----  ------  ------\n'
+            'Status  Severity  Rule  Object  Policy  Basis\n'
+            '------  --------  ----  ------  ------  -----\n'
             f'No new or resolved findings (unchanged: {unchanged}; local files only).'
         )
 
-    rows: list[tuple[str, str, str, str, str]] = []
+    rows: list[tuple[str, str, str, str, str, str]] = []
     for status, items in (('new', new_items), ('resolved', resolved_items)):
         for item in items:
             rule_id = item['rule']
             severity = item.get('severity') or RULES[rule_id][0]
             target = '.'.join(x for x in (item.get('schema_name', ''), item.get('object_name', '')) if x) or '-'
             policy = item.get('policy_name') or '-'
-            rows.append((status, severity, rule_id, target, policy))
+            basis = item.get('basis') or '-'
+            rows.append((status, severity, rule_id, target, policy, basis))
 
-    headers = ('Status', 'Severity', 'Rule', 'Object', 'Policy')
+    headers = ('Status', 'Severity', 'Rule', 'Object', 'Policy', 'Basis')
     widths = [
         max(len(headers[i]), *(len(r[i]) for r in rows))
         for i in range(len(headers))

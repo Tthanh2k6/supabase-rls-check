@@ -52,6 +52,7 @@ def analyze_sql_export(path: str) -> dict[str, Any]:
             'schema_name': item['schema_name'],
             'object_name': item['object_name'],
             'policy_name': item['policy_name'],
+            'basis': item.get('basis', ''),
             'remediation': remedy,
         }
         if item['rule'] == 'anon_readable':
@@ -129,6 +130,7 @@ def _enrich_finding(item: dict[str, Any]) -> dict[str, Any]:
         'schema_name': item['schema_name'],
         'object_name': item['object_name'],
         'policy_name': item['policy_name'],
+        'basis': item.get('basis', ''),
         'remediation': remedy,
     }
     if item['rule'] == 'anon_readable':

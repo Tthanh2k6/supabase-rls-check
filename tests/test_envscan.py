@@ -221,3 +221,101 @@ def test_mcp_scan_public_env_tool(tmp_path):
 
     with pytest.raises(ValueError):
         mcp_server.scan_public_env(str(tmp_path / 'nonexistent'))
+
+
+def test_agent_config_files_json_key_paths_and_masking(tmp_path, capsys):
+    sr_jwt = build_jwt('service_role')
+    sb_secret = 'sb_secret_fake_agent_key_1234567890'
+    pg_url = 'postgresql://postgres:fake_inline_pw_999@db.example.supabase.co:5432/postgres'
+
+    claude_settings = tmp_path / '.claude' / 'settings.json'
+    claude_settings.parent.mkdir(parents=True)
+    claude_settings.write_text(
+        json.dumps({'env': {'SUPABASE_SECRET_KEY': sb_secret}}, indent=2),
+        encoding='utf-8',
+    )
+
+    cursor_mcp = tmp_path / '.cursor' / 'mcp.json'
+    cursor_mcp.parent.mkdir(parents=True)
+    cursor_mcp.write_text(
+        json.dumps(
+            {
+                'mcpServers': {
+                    'supabase': {
+                        'env': {
+                            'SUPABASE_SERVICE_ROLE_KEY': sr_jwt,
+                            'DATABASE_URL': pg_url,
+                        }
+                    }
+                }
+            },
+            indent=2,
+        ),
+        encoding='utf-8',
+    )
+
+    vscode_mcp = tmp_path / 'packages' / 'web' / '.vscode' / 'mcp.json'
+    vscode_mcp.parent.mkdir(parents=True)
+    vscode_mcp.write_text(
+        json.dumps({'servers': {'db': {'args': ['--db-url', 'postgres://admin:fake_pw_2@localhost:5432/app']}}}),
+        encoding='utf-8',
+    )
+
+    # Safe .mcp.json (anon JWT, publishable key, passwordless Postgres URL) -> no finding
+    root_mcp = tmp_path / '.mcp.json'
+    root_mcp.write_text(
+        json.dumps(
+            {
+                'env': {
+                    'ANON': build_jwt('anon'),
+                    'PUB': 'sb_publishable_fake_12345',
+                    'LOCAL_DB': 'postgresql://postgres@127.0.0.1:5432/postgres',
+                }
+            }
+        ),
+        encoding='utf-8',
+    )
+
+    result = envscan.scan_env(tmp_path)
+    assert len(result['findings']) == 4
+    by_file_var = {(f['file'], f['variable']): f for f in result['findings']}
+    assert ('.claude/settings.json', 'env.SUPABASE_SECRET_KEY') in by_file_var
+    assert ('.cursor/mcp.json', 'mcpServers.supabase.env.SUPABASE_SERVICE_ROLE_KEY') in by_file_var
+    assert ('.cursor/mcp.json', 'mcpServers.supabase.env.DATABASE_URL') in by_file_var
+    assert ('packages/web/.vscode/mcp.json', 'servers.db.args[1]') in by_file_var
+
+    for item in result['findings']:
+        assert item['rule'] == 'agent_config_secret'
+        assert item['severity'] == 'Critical'
+
+    serialized = json.dumps(result)
+    assert sr_jwt not in serialized
+    assert sb_secret not in serialized
+    assert 'fake_inline_pw_999' not in serialized
+    assert 'fake_pw_2' not in serialized
+
+    assert audit.main(['scan-env', str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    assert 'agent_config_secret' in out
+    assert 'mcpServers.supabase.env.DATABASE_URL' in out
+    assert 'fake_inline_pw_999' not in out
+
+
+def test_agent_config_invalid_json_falls_back_to_text_search(tmp_path):
+    sb_secret = 'sb_secret_fake_local_broken_987654'
+    claude_local = tmp_path / '.claude' / 'settings.local.json'
+    claude_local.parent.mkdir(parents=True)
+    claude_local.write_text(
+        '{\n  "env": {\n    "KEY": "' + sb_secret + '",\n  // invalid json comment\n',
+        encoding='utf-8',
+    )
+
+    result = envscan.scan_env(tmp_path)
+    assert len(result['findings']) == 1
+    item = result['findings'][0]
+    assert item['rule'] == 'agent_config_secret'
+    assert item['severity'] == 'Critical'
+    assert item['file'] == '.claude/settings.local.json'
+    assert item['line'] == 3
+    assert item['masked_value'] == f'{sb_secret[:6]}…{sb_secret[-4:]}'
+    assert sb_secret not in json.dumps(result)
