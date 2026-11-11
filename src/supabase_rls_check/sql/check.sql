@@ -11,18 +11,25 @@ WITH policy_expressions AS (
   WHERE p.schemaname = 'public' AND e.expression IS NOT NULL
 ), findings AS (
   SELECT 'rls_disabled'::text AS rule, n.nspname::text AS schema_name,
-         c.relname::text AS object_name, ''::text AS policy_name
+         c.relname::text AS object_name, ''::text AS policy_name, ''::text AS basis
   FROM pg_catalog.pg_class c
   JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
   WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND NOT c.relrowsecurity
   UNION ALL
-  SELECT 'policy_true', schemaname::text, tablename::text, policyname::text
+  SELECT 'policy_true', schemaname::text, tablename::text, policyname::text, ''::text
   FROM pg_catalog.pg_policies
   WHERE schemaname = 'public' AND (
     regexp_replace(coalesce(qual, ''), '[()[:space:]]', '', 'g') = 'true'
     OR regexp_replace(coalesce(with_check, ''), '[()[:space:]]', '', 'g') = 'true')
   UNION ALL
-  SELECT 'sensitive_anon_policy', p.schemaname::text, p.tablename::text, p.policyname::text
+  SELECT 'sensitive_anon_policy', p.schemaname::text, p.tablename::text, p.policyname::text,
+         CASE
+           WHEN pg_catalog.obj_description(c.oid, 'pg_class') ~* '\mpii\M'
+             THEN 'table comment tag ''pii'''
+           ELSE 'table name matches pattern '''
+             || substring(lower(p.tablename) FROM '(user|profile|order|payment|invoice|customer|patient|secret|token|document)')
+             || ''''
+         END
   FROM pg_catalog.pg_policies p
   JOIN pg_catalog.pg_namespace n ON n.nspname = p.schemaname
   JOIN pg_catalog.pg_class c ON c.relnamespace = n.oid AND c.relname = p.tablename
@@ -34,7 +41,7 @@ WITH policy_expressions AS (
     )
   UNION ALL
   SELECT 'definer_search_path', n.nspname::text,
-         p.proname || '(' || pg_catalog.pg_get_function_identity_arguments(p.oid) || ')', ''
+         p.proname || '(' || pg_catalog.pg_get_function_identity_arguments(p.oid) || ')', '', ''::text
   FROM pg_catalog.pg_proc p
   JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
   WHERE n.nspname = 'public' AND p.prosecdef AND p.prokind = 'f'
@@ -42,7 +49,7 @@ WITH policy_expressions AS (
   UNION ALL
   -- Definer functions the anon role can EXECUTE via /rest/v1/rpc (trigger functions excluded).
   SELECT 'definer_anon_exec', n.nspname::text,
-         p.proname || '(' || pg_catalog.pg_get_function_identity_arguments(p.oid) || ')', ''
+         p.proname || '(' || pg_catalog.pg_get_function_identity_arguments(p.oid) || ')', '', ''::text
   FROM pg_catalog.pg_proc p
   JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
   WHERE n.nspname = 'public' AND p.prosecdef AND p.prokind = 'f'
@@ -50,27 +57,27 @@ WITH policy_expressions AS (
     AND EXISTS (SELECT 1 FROM pg_catalog.pg_roles r WHERE r.rolname = 'anon')
     AND pg_catalog.has_function_privilege('anon', p.oid, 'EXECUTE')
   UNION ALL
-  SELECT 'view_not_invoker', n.nspname::text, c.relname::text, ''
+  SELECT 'view_not_invoker', n.nspname::text, c.relname::text, '', ''::text
   FROM pg_catalog.pg_class c
   JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
   WHERE n.nspname = 'public' AND c.relkind = 'v'
     AND NOT EXISTS (SELECT 1 FROM unnest(c.reloptions) opt
                     WHERE opt IN ('security_invoker=true', 'security_invoker=on', 'security_invoker=1'))
   UNION ALL
-  SELECT 'public_bucket', 'storage', name, '' FROM storage.buckets WHERE public = true
+  SELECT 'public_bucket', 'storage', name, '', ''::text FROM storage.buckets WHERE public = true
   UNION ALL
-  SELECT 'public_extension', n.nspname::text, e.extname::text, ''
+  SELECT 'public_extension', n.nspname::text, e.extname::text, '', ''::text
   FROM pg_catalog.pg_extension e
   JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace
   WHERE n.nspname = 'public'
   UNION ALL
-  SELECT DISTINCT 'policy_user_metadata', schemaname::text, tablename::text, policyname::text
+  SELECT DISTINCT 'policy_user_metadata', schemaname::text, tablename::text, policyname::text, ''::text
   FROM policy_expressions
   -- Allow deparsed casts, parentheses and SELECT aliases between the JWT and its key.
   -- Do not confuse a separate user_metadata literal with a key read from the JWT.
   WHERE expression ~* $re$\m(auth[.]jwt[[:space:]]*\([[:space:]]*\)|(?:pg_catalog[.])?current_setting[[:space:]]*\([[:space:]]*'request[.]jwt[.]claims'[^)]*\))([[:space:]()]|::[[:space:]]*(jsonb?|text)|AS[[:space:]]+[[:alnum:]_]+)*(->>?|#>>?)[[:space:]]*'(user_metadata|\{user_metadata(,[^']*)?\})'$re$
   UNION ALL
-  SELECT DISTINCT 'policy_auth_per_row', schemaname::text, tablename::text, policyname::text
+  SELECT DISTINCT 'policy_auth_per_row', schemaname::text, tablename::text, policyname::text, ''::text
   FROM policy_expressions
   WHERE relrowsecurity
     -- Ignore strings, then remove each directly SELECT-wrapped call's prefix.
@@ -81,7 +88,7 @@ WITH policy_expressions AS (
           '', 'gi'
         ) ~* $re$\m(auth[.](uid|jwt|role)|(?:pg_catalog[.])?current_setting)[[:space:]]*\($re$
   UNION ALL
-  SELECT 'auth_users_exposed', n.nspname::text, c.relname::text, ''
+  SELECT 'auth_users_exposed', n.nspname::text, c.relname::text, '', ''::text
   FROM pg_catalog.pg_class c
   JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
   WHERE n.nspname = 'public' AND c.relkind IN ('v', 'm')
@@ -107,7 +114,7 @@ WITH policy_expressions AS (
       WHERE rw.ev_class = c.oid AND bn.nspname = 'auth' AND base.relname = 'users'
     )
   UNION ALL
-  SELECT 'matview_api_exposed', n.nspname::text, c.relname::text, ''
+  SELECT 'matview_api_exposed', n.nspname::text, c.relname::text, '', ''::text
   FROM pg_catalog.pg_class c
   JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
   WHERE n.nspname = 'public' AND c.relkind IN ('m', 'f')
@@ -117,7 +124,7 @@ WITH policy_expressions AS (
         AND pg_catalog.has_table_privilege(r.oid, c.oid, 'SELECT')
     )
   UNION ALL
-  SELECT DISTINCT 'public_bucket_listable', 'storage', b.name, p.policyname::text
+  SELECT DISTINCT 'public_bucket_listable', 'storage', b.name, p.policyname::text, ''::text
   FROM storage.buckets b
   JOIN pg_catalog.pg_policies p
     ON p.schemaname = 'storage'
@@ -130,7 +137,7 @@ WITH policy_expressions AS (
    )
   WHERE b.public = true
   UNION ALL
-  SELECT DISTINCT 'policy_any_authenticated', schemaname::text, tablename::text, policyname::text
+  SELECT DISTINCT 'policy_any_authenticated', schemaname::text, tablename::text, policyname::text, ''::text
   FROM policy_expressions
   WHERE lower(
           regexp_replace(
@@ -152,7 +159,7 @@ WITH policy_expressions AS (
         -- Parentheses are stripped above, so auth.role() becomes auth.role here.
         ) IN ('auth.role=''authenticated''', 'auth.uidisnotnull')
   UNION ALL
-  SELECT DISTINCT 'policy_true_writable', p.schemaname::text, p.tablename::text, p.policyname::text
+  SELECT DISTINCT 'policy_true_writable', p.schemaname::text, p.tablename::text, p.policyname::text, ''::text
   FROM pg_catalog.pg_policies p
   JOIN pg_catalog.pg_namespace n ON n.nspname = p.schemaname
   JOIN pg_catalog.pg_class c ON c.relnamespace = n.oid AND c.relname = p.tablename
@@ -169,6 +176,45 @@ WITH policy_expressions AS (
           OR pg_catalog.has_table_privilege(r.oid, c.oid, 'DELETE')
         )
     )
+  UNION ALL
+  SELECT 'secret_column_exposed', n.nspname::text, c.relname::text, '', a.attname::text
+  FROM pg_catalog.pg_class c
+  JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+  JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid
+  WHERE n.nspname = 'public'
+    AND c.relkind IN ('r', 'p')
+    AND a.attnum > 0
+    AND NOT a.attisdropped
+    AND a.attname ~* '(^|_)(api_key|apikey|secret|client_secret|access_token|refresh_token|private_key|password)$'
+    AND EXISTS (
+      SELECT 1 FROM pg_catalog.pg_roles r
+      WHERE r.rolname IN ('anon', 'authenticated')
+        AND (
+          pg_catalog.has_table_privilege(r.oid, c.oid, 'SELECT')
+          OR pg_catalog.has_column_privilege(r.oid, c.oid, a.attnum, 'SELECT')
+        )
+    )
+  UNION ALL
+  SELECT 'definer_trusts_id_arg', n.nspname::text,
+         p.proname || '(' || pg_catalog.pg_get_function_identity_arguments(p.oid) || ')', '',
+         args.basis
+  FROM pg_catalog.pg_proc p
+  JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+  CROSS JOIN LATERAL (
+    SELECT string_agg(arg.argname, ', ' ORDER BY arg.idx) AS basis
+    FROM unnest(coalesce(p.proargnames, ARRAY[]::text[])) WITH ORDINALITY AS arg(argname, idx)
+    WHERE (p.proargmodes IS NULL OR p.proargmodes[arg.idx] IN ('i', 'b', 'v'))
+      AND arg.argname ~* '(_id$|^uid$|^user$|^org$|^tenant$)'
+  ) args
+  WHERE n.nspname = 'public' AND p.prosecdef AND p.prokind = 'f'
+    AND p.prorettype <> 'pg_catalog.trigger'::pg_catalog.regtype
+    AND args.basis IS NOT NULL
+    AND p.prosrc !~* '\mauth[[:space:]]*\.[[:space:]]*(uid|jwt)[[:space:]]*\([[:space:]]*\)'
+    AND EXISTS (
+      SELECT 1 FROM pg_catalog.pg_roles r
+      WHERE r.rolname IN ('anon', 'authenticated')
+        AND pg_catalog.has_function_privilege(r.oid, p.oid, 'EXECUTE')
+    )
 )
-SELECT rule, schema_name, object_name, policy_name FROM findings
-ORDER BY rule, schema_name, object_name, policy_name;
+SELECT rule, schema_name, object_name, policy_name, basis FROM findings
+ORDER BY rule, schema_name, object_name, policy_name, basis;

@@ -115,6 +115,20 @@ RULES: dict[str, tuple[str, str, str, str, str]] = {
         'Policy cho phép mọi người dùng đã đăng nhập',
         'Gắn dòng dữ liệu với người gọi (ví dụ (select auth.uid()) = user_id) hoặc bảng thành viên; nếu mọi người dùng đã đăng nhập thực sự được phép xem bảng, hãy ghi rõ trong comment của bảng và chấp nhận phát hiện.',
     ),
+    'secret_column_exposed': (
+        'Medium',
+        'Secret-like column readable by API roles',
+        'Move secrets to Supabase Vault, a private schema, or a server-only Edge Function, and revoke column SELECT (REVOKE SELECT (col) ON public.t FROM anon, authenticated).',
+        'Cột nghi chứa khóa bí mật cho phép role API đọc',
+        'Chuyển khóa bí mật sang Supabase Vault, schema riêng tư hoặc Edge Function phía máy chủ, đồng thời thu hồi quyền SELECT trên cột (REVOKE SELECT (col) ON public.t FROM anon, authenticated).',
+    ),
+    'definer_trusts_id_arg': (
+        'Medium',
+        'Definer function takes an ID argument without referencing auth.uid() or auth.jwt() (review needed)',
+        'Review needed: verify the function checks caller identity with auth.uid() or auth.jwt() instead of trusting a caller-supplied ID argument, or revoke EXECUTE from anon/authenticated.',
+        'Hàm definer nhận tham số ID nhưng không kiểm tra auth.uid() hoặc auth.jwt() (cần rà soát)',
+        'Cần rà soát: xác minh hàm kiểm tra danh tính người gọi bằng auth.uid() hoặc auth.jwt() thay vì tin tưởng tham số ID do client truyền vào, hoặc thu hồi quyền EXECUTE của anon/authenticated.',
+    ),
     'anon_readable': (
         'High',
         'Rows readable without login',
@@ -150,6 +164,13 @@ RULES: dict[str, tuple[str, str, str, str, str]] = {
         'Mã nguồn client chứa trực tiếp khóa service_role hoặc khóa bí mật Supabase',
         'Chuyển khóa bí mật sang mã phía máy chủ (Edge Function / API route), đổi/xoay vòng khóa đã lộ ngay lập tức và chỉ giữ khóa anon/publishable ở phía client.',
     ),
+    'agent_config_secret': (
+        'Critical',
+        'AI coding agent or MCP config file contains a database or Supabase secret',
+        'Remove hardcoded secrets from agent/MCP config files, rotate the leaked credential immediately, and pass secrets via unversioned environment variables or OS keychain references.',
+        'Tệp cấu hình AI agent hoặc MCP chứa khóa bí mật Supabase hoặc mật khẩu cơ sở dữ liệu',
+        'Xóa khóa bí mật ghi cứng khỏi tệp cấu hình agent/MCP, xoay vòng/đổi thông tin xác thực đã lộ ngay lập tức và truyền bí mật qua biến môi trường không đưa vào git hoặc keychain hệ điều hành.',
+    ),
 }
 
 SQL_RULES: tuple[str, ...] = (
@@ -168,17 +189,20 @@ SQL_RULES: tuple[str, ...] = (
     'matview_api_exposed',
     'public_bucket_listable',
     'policy_any_authenticated',
+    'secret_column_exposed',
+    'definer_trusts_id_arg',
 )
 
 ENV_RULES: tuple[str, ...] = (
     'public_env_service_role',
     'public_env_secret_key',
     'service_role_in_client_code',
+    'agent_config_secret',
 )
 
 SEVERITIES: list[str] = ['Critical', 'High', 'Medium', 'Low']
 VI_SEVERITIES: list[str] = ['Nghiêm trọng', 'Cao', 'Trung bình', 'Thấp']
-JWT = re.compile(r'[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+')
+JWT = re.compile(r'eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}')
 
 NOTES: dict[str, tuple[str, str]] = {
     'discovery_failed': (
@@ -468,6 +492,51 @@ RULE_GUIDES: dict[str, dict[str, str]] = {
             "-- COMMENT ON TABLE public.your_table IS 'shared across all authenticated users';"
         ),
     },
+    'secret_column_exposed': {
+        'source': 'SQL catalog check (check.sql)',
+        'why': (
+            'A table in public has a column whose name matches or ends with a secret token '
+            '(api_key, apikey, secret, client_secret, access_token, refresh_token, private_key, '
+            'or password) and anon or authenticated holds SELECT privileges on the table or that column. '
+            'RLS can limit rows to the owner, but the client still receives the plaintext secret whenever '
+            'SELECT * or that column is queried through the Data API.'
+        ),
+        'caveat': (
+            'Column-name heuristic (basis reports the column name). RLS can limit rows to the owner, '
+            'but the client still receives the plaintext secret. If a column stores a non-secret value, '
+            'rename it or accept the finding after review.'
+        ),
+        'example': (
+            '-- Move third-party API keys and secrets to Supabase Vault, a private schema, or a server-only Edge Function.\n'
+            '-- Or revoke SELECT on the secret column from API roles (requires column-level SELECT grants on remaining columns):\n'
+            '-- REVOKE SELECT ON public.t FROM PUBLIC, anon, authenticated;\n'
+            '-- GRANT SELECT (id, user_id) ON public.t TO authenticated;\n'
+            '-- REVOKE SELECT (col) ON public.t FROM anon, authenticated;'
+        ),
+    },
+    'definer_trusts_id_arg': {
+        'source': 'SQL catalog check (check.sql)',
+        'why': (
+            'A SECURITY DEFINER function in public is executable by anon or authenticated, accepts '
+            'an argument whose name ends with _id or equals uid, user, org, or tenant, and its body '
+            '(prosrc) does not mention auth.uid() or auth.jwt(). Because SECURITY DEFINER runs with '
+            'owner privileges and bypasses RLS, trusting a caller-supplied user or tenant ID without '
+            'verifying the caller can let one user access another user\'s data via /rest/v1/rpc/*.'
+        ),
+        'caveat': (
+            'Review needed: this static prosrc heuristic has honest limits. It misses functions that '
+            'call a helper which reads auth.uid(), and may flag functions that check the id against '
+            'a membership table.'
+        ),
+        'example': (
+            '-- Derive the caller from auth.uid() inside the function or verify ownership explicitly:\n'
+            '-- IF p_user_id IS DISTINCT FROM auth.uid() THEN\n'
+            "--   RAISE EXCEPTION 'permission denied';\n"
+            '-- END IF;\n'
+            '-- Or revoke RPC execution if clients should not call the function directly:\n'
+            '-- REVOKE EXECUTE ON FUNCTION public.get_user_orders(uuid) FROM PUBLIC, anon, authenticated;'
+        ),
+    },
     'anon_readable': {
         'source': 'Anonymous HTTP probe (probe)',
         'why': (
@@ -553,6 +622,25 @@ RULE_GUIDES: dict[str, dict[str, str]] = {
             '3. Keep only the anon/publishable key in the client.'
         ),
     },
+    'agent_config_secret': {
+        'source': 'Local public-env scan (scan-env)',
+        'why': (
+            'An AI coding agent or MCP configuration file (.claude/settings.json, '
+            '.claude/settings.local.json, .cursor/mcp.json, .mcp.json, or .vscode/mcp.json) '
+            'contains a Supabase sb_secret_ key, a service_role JWT, or a PostgreSQL connection '
+            'string with an inline password. These workspace files are frequently committed to '
+            'repositories or shared in bug reports by mistake.'
+        ),
+        'caveat': (
+            'Even when a local settings file is listed in .gitignore, storing plaintext service_role '
+            'keys or database passwords on disk exposes them to other local processes and accidental commits.'
+        ),
+        'example': (
+            '1. Remove the secret from .claude/settings*.json, .cursor/mcp.json, .mcp.json, or .vscode/mcp.json.\n'
+            '2. Rotate the leaked Supabase secret key or database password in the Supabase Dashboard immediately.\n'
+            '3. Add local agent config files to .gitignore and reference runtime environment variables instead of inline credentials.'
+        ),
+    },
 }
 
 
@@ -568,6 +656,7 @@ def finding(
     schema_name: str = '',
     object_name: str = '',
     policy_name: str = '',
+    basis: str = '',
     **extra: Any,
 ) -> dict[str, Any]:
     """Build a normalized finding dictionary without raw row values."""
@@ -578,6 +667,7 @@ def finding(
         'schema_name': clean(schema_name),
         'object_name': clean(object_name),
         'policy_name': clean(policy_name),
+        'basis': clean(basis or ''),
     }
     if rule == 'anon_readable':
         result['columns'] = sorted({clean(c) for c in extra.get('columns', [])})
@@ -637,7 +727,8 @@ def load_result(path: str | Path) -> dict[str, Any]:
                 item['rule'],
                 item['schema_name'],
                 item['object_name'],
-                item.get('policy_name', ''),
+                item.get('policy_name') or '',
+                item.get('basis') or '',
                 columns=item.get('columns', []),
                 row_count=item.get('row_count'),
                 file=item.get('file'),

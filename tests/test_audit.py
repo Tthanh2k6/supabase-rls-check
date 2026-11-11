@@ -61,16 +61,31 @@ def mock_http(monkeypatch, responses):
 
 def test_all_sql_checks_csv_json(tmp_path):
     result = audit.load_result(FIXTURE)
-    assert len(audit.SQL_RULES) == 15
+    assert len(audit.SQL_RULES) == 17
     assert {f['rule'] for f in result['findings']} == set(audit.SQL_RULES)
     assert {f['rule'] for f in result['findings']} == set(audit.RULES) - {
         'anon_readable',
         'service_role_exposed',
         *audit.ENV_RULES,
     }
+    by_rule_obj = {(f['rule'], f['object_name']): f['basis'] for f in result['findings']}
+    assert by_rule_obj[('sensitive_anon_policy', 'payments')] == "table name matches pattern 'payment'"
+    assert by_rule_obj[('sensitive_anon_policy', 'journal_entries')] == "table comment tag 'pii'"
+    assert by_rule_obj[('secret_column_exposed', 'user_api_keys')] == 'openai_api_key'
+    assert by_rule_obj[('definer_trusts_id_arg', 'get_user_orders(p_user_id uuid)')] == 'p_user_id'
+    assert by_rule_obj[('rls_disabled', 'todos')] == ''
     path = tmp_path / 'export.json'
     path.write_text(json.dumps(result['findings']), encoding='utf-8')
     assert audit.load_result(path) == result
+
+    # Backward compatibility: old JSON results without a 'basis' key treat basis as ''
+    legacy_path = tmp_path / 'legacy.json'
+    legacy_path.write_text(
+        json.dumps([{'rule': 'rls_disabled', 'schema_name': 'public', 'object_name': 'todos', 'policy_name': ''}]),
+        encoding='utf-8',
+    )
+    legacy_loaded = audit.load_result(legacy_path)
+    assert legacy_loaded['findings'][0]['basis'] == ''
 
 
 @pytest.mark.parametrize(
@@ -319,9 +334,15 @@ def test_sql_print_bundled_check_query(capsys):
 
 def test_mcp_core_analyze_and_explain_without_sdk(tmp_path):
     summary = mcp_server.analyze_sql_export(str(FIXTURE))
-    assert summary['total_findings'] == 29
-    assert summary['counts'] == {'Critical': 3, 'High': 15, 'Medium': 5, 'Low': 6}
+    assert summary['total_findings'] == 31
+    assert summary['counts'] == {'Critical': 3, 'High': 15, 'Medium': 7, 'Low': 6}
     assert {item['rule'] for item in summary['findings']} == set(audit.SQL_RULES)
+    assert all('basis' in item for item in summary['findings'])
+    bases = {(item['rule'], item['object_name']): item['basis'] for item in summary['findings']}
+    assert bases[('sensitive_anon_policy', 'payments')] == "table name matches pattern 'payment'"
+    assert bases[('sensitive_anon_policy', 'journal_entries')] == "table comment tag 'pii'"
+    assert bases[('secret_column_exposed', 'user_api_keys')] == 'openai_api_key'
+    assert bases[('definer_trusts_id_arg', 'get_user_orders(p_user_id uuid)')] == 'p_user_id'
     assert 'ROLLBACK;' in summary['fix_sql']
 
     explanation = mcp_server.explain_rule('definer_anon_exec')
@@ -409,11 +430,14 @@ def test_probe_without_any_key_fails(monkeypatch):
     ('matview_api_exposed', 'High'),
     ('public_bucket_listable', 'Medium'),
     ('policy_any_authenticated', 'Medium'),
+    ('secret_column_exposed', 'Medium'),
+    ('definer_trusts_id_arg', 'Medium'),
 ])
 def test_new_catalog_rule_reports_and_manual_fixes(tmp_path, lang, rule, severity):
     schema = 'storage' if rule == 'public_bucket_listable' else 'public'
-    policy = '' if rule in ('auth_users_exposed', 'matview_api_exposed') else 'review_policy'
-    item = audit.finding(rule, schema, 'review_target', policy)
+    policy = '' if rule in ('auth_users_exposed', 'matview_api_exposed', 'secret_column_exposed', 'definer_trusts_id_arg') else 'review_policy'
+    basis = 'openai_api_key' if rule == 'secret_column_exposed' else ('p_user_id' if rule == 'definer_trusts_id_arg' else '')
+    item = audit.finding(rule, schema, 'review_target', policy, basis)
     result = {'findings': [item], 'notes': [], 'observations': []}
     audit.report([result], tmp_path, lang=lang)
     title, remedy = audit.RULES[rule][3:5] if lang == 'vi' else audit.RULES[rule][1:3]
@@ -427,8 +451,12 @@ def test_new_catalog_rule_reports_and_manual_fixes(tmp_path, lang, rule, severit
         assert f'{schema}.review_target' in content
         if item['policy_name']:
             assert item['policy_name'] in content
+        if item['basis']:
+            assert item['basis'] in content
     sql = (tmp_path / 'fix.sql').read_text(encoding='utf-8')
     assert f'-- {rule}: {schema}.review_target' in sql
+    if item['basis']:
+        assert item['basis'] in sql
     assert f'-- {remedy}' in sql
     # These rules must never introduce executable fixes, even inside the rollback template.
     statements = [line for line in sql.splitlines() if line and not line.startswith('--')]
@@ -446,6 +474,9 @@ def test_new_catalog_rule_reports_and_manual_fixes(tmp_path, lang, rule, severit
     ('matview_api_exposed', 'High', 'Row Level Security does not apply', 'security_invoker = true'),
     ('public_bucket_listable', 'Medium', 'Public buckets serve files by URL', 'storage.objects'),
     ('policy_any_authenticated', 'Medium', 'signed in', '(select auth.uid()) = user_id'),
+    ('secret_column_exposed', 'Medium', 'plaintext secret', 'REVOKE SELECT (col) ON public.t FROM anon, authenticated'),
+    ('definer_trusts_id_arg', 'Medium', 'Review needed', 'auth.uid()'),
+    ('agent_config_secret', 'Critical', '.claude/settings.json', 'Rotate'),
 ])
 def test_new_catalog_rule_explanations_and_mcp(rule, severity, explanation, remedy):
     text = audit.explain_rule(rule)

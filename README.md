@@ -42,7 +42,7 @@ Print the bundled read-only SQL query (or open [`src/supabase_rls_check/sql/chec
 supabase-rls-check sql --print-sql > check.sql
 ```
 
-Paste `check.sql` into the **Supabase SQL Editor**, adjust the sensitive-table name pattern if needed, run the `SELECT`, and export the single result set as CSV or JSON (`rule,schema_name,object_name,policy_name`). Only catalog metadata is queried—never application rows.
+Paste `check.sql` into the **Supabase SQL Editor**, adjust the sensitive-table name pattern if needed, run the `SELECT`, and export the single result set as CSV or JSON (`rule,schema_name,object_name,policy_name,basis`). Only catalog metadata is queried—never application rows.
 
 Validate and normalize the export:
 
@@ -98,8 +98,8 @@ supabase-rls-check report \
   --i-own-this-project
 ```
 
-- Inspects `.env`, `.env.*`, `app.json`, `app.config.*`, `eas.json`, and client source files (`*.js`, `*.jsx`, `*.ts`, `*.tsx`, `*.mjs`, `*.cjs`, `*.vue`, `*.svelte`), skipping `node_modules`, `.git`, virtualenvs, build outputs, binary files, and files over 2 MB.
-- Emits `public_env_service_role` (**Critical**), `public_env_secret_key` (**High**), and `service_role_in_client_code` (**Critical**, excluding `supabase/functions/`, `server/`, `api/`, `scripts/`, and `backend/`).
+- Inspects `.env`, `.env.*`, `app.json`, `app.config.*`, `eas.json`, AI coding agent and MCP configuration files (`.claude/settings.json`, `.claude/settings.local.json`, `.cursor/mcp.json`, `.mcp.json`, `.vscode/mcp.json`), and client source files (`*.js`, `*.jsx`, `*.ts`, `*.tsx`, `*.mjs`, `*.cjs`, `*.vue`, `*.svelte`), skipping `node_modules`, `.git`, virtualenvs, build outputs, binary files, and files over 2 MB.
+- Emits `public_env_service_role` (**Critical**), `public_env_secret_key` (**High**), `service_role_in_client_code` (**Critical**, excluding `supabase/functions/`, `server/`, `api/`, `scripts/`, and `backend/`), and `agent_config_secret` (**Critical**, reporting file path and JSON key path when valid JSON, or falling back to text search on invalid JSON, for `sb_secret_` keys, `service_role` JWTs, and `postgres(ql)?://user:password@` URLs).
 - Requires no consent flag because it only reads local files, and always masks secret values (`first 6 chars + … + last 4`).
 
 ### Explaining a rule and optional MCP mode
@@ -158,6 +158,8 @@ supabase-rls-check diff \
   --fail-on-new high
 ```
 
+Each finding is keyed by `(rule, schema_name, object_name, policy_name, basis)`, where `basis` explains why a heuristic rule fired (for example `"table name matches pattern 'payment'"` vs `"table comment tag 'pii'"` on `sensitive_anon_policy`, the column name on `secret_column_exposed`, or the argument name(s) on `definer_trusts_id_arg`). Adding a `pii` table comment between runs therefore shows up as a **new** finding (and the previous pattern-based finding on that policy, if any, as **resolved**) rather than a separate "changed" bucket. Older JSON files without a `basis` key remain compatible and default to `""`.
+
 Run `check.sql` on a schedule and on pull requests against your baseline (for example `.rls-baseline.json` committed in the repository or downloaded from the previous workflow artifact) so schema drift outside a pull request triggers an alert:
 
 ```yaml
@@ -208,16 +210,16 @@ supabase-rls-check report --from demo/todo_ai.csv --out-dir demo --project "todo
 supabase-rls-check report --from demo/todo_ai.csv --out-dir demo/vi --project "todo-ai (dữ liệu giả)" --lang vi --i-own-this-project
 ```
 
-## Fifteen checks: SQL catalog rules
+## Seventeen checks: SQL catalog rules
 
-`check.sql` inspects PostgreSQL 15+ system catalogs and `storage.buckets` in a single read-only CTE query:
+`check.sql` inspects PostgreSQL 15+ system catalogs and `storage.buckets` in a single read-only CTE query (and `scan-env` adds local file checks):
 
 | Rule ID | Severity | Meaning |
 | --- | --- | --- |
 | `rls_disabled` | High | Table or partitioned table in `public` has Row Level Security disabled (`relrowsecurity = false`). |
 | `policy_true` | High | Policy in `public` has an unconditional `USING (true)` or `WITH CHECK (true)` expression. |
 | `policy_true_writable` | Critical | Permissive `UPDATE`, `DELETE`, or `ALL` policy in `public` for `anon`, `authenticated`, or `public` has an unconditional `USING (true)` expression on a table where `anon` or `authenticated` holds `UPDATE` or `DELETE` privileges, allowing anyone with that role to modify or delete every row. |
-| `sensitive_anon_policy` | High | Policy granted to `anon` or `public` on a table matching common sensitive names (`user`, `profile`, `order`, `payment`, `invoice`, `customer`, `patient`, `secret`, `token`, `document`) or tagged with a `pii` table comment. |
+| `sensitive_anon_policy` | High | Policy granted to `anon` or `public` on a table matching common sensitive names (`user`, `profile`, `order`, `payment`, `invoice`, `customer`, `patient`, `secret`, `token`, `document`) or tagged with a `pii` table comment (`basis` records the matched pattern or `'pii'` comment tag). |
 | `definer_anon_exec` | High | Non-trigger `SECURITY DEFINER` function in `public` is executable by `anon` (callable via `/rest/v1/rpc/*`). |
 | `definer_search_path` | High | `SECURITY DEFINER` function in `public` has no fixed `search_path` set on the function definition. |
 | `view_not_invoker` | High | View in `public` does not enable `security_invoker`, so base-table queries run with view-owner privileges. |
@@ -229,8 +231,11 @@ supabase-rls-check report --from demo/todo_ai.csv --out-dir demo/vi --project "t
 | `auth_users_exposed` | Critical | Public view directly depends on `auth.users`, allows `anon` or `authenticated` to SELECT, and is materialized or lacks `security_invoker`. Drop it or harden a regular view and revoke access; publish only needed profile columns from a separate table. |
 | `matview_api_exposed` | High | Materialized view or foreign table in `public` allows `anon` or `authenticated` to `SELECT`. Row Level Security does not apply to materialized views, so every row is readable through the Data API. Revoke `SELECT` from `anon`/`authenticated` and serve the data through a regular view with `security_invoker = true`, or move it to a schema the API does not expose. |
 | `policy_any_authenticated` | Medium | Policy in `public` only checks that the caller is signed in (`auth.role() = 'authenticated'` or `auth.uid() IS NOT NULL`), giving every signed-in account the same access. Tie the row to `(select auth.uid()) = user_id` or a membership table, or document intentional shared access in a table comment. |
+| `secret_column_exposed` | Medium | Table in `public` has a column matching or ending with `api_key`, `apikey`, `secret`, `client_secret`, `access_token`, `refresh_token`, `private_key`, or `password` (`basis` = column name) where `anon` or `authenticated` holds table or column `SELECT`. RLS can limit rows to the owner, but the client still receives the plaintext secret; move secrets to Supabase Vault, a private schema, or a server-only Edge Function, or `REVOKE SELECT (col) ON public.t FROM anon, authenticated`. |
+| `definer_trusts_id_arg` | Medium | `SECURITY DEFINER` function in `public` executable by `anon` or `authenticated` takes an argument ending with `_id` or equal to `uid`, `user`, `org`, or `tenant` (`basis` = argument name(s)) and its `prosrc` does not reference `auth.uid()` or `auth.jwt()`. Review needed: misses functions that delegate caller checks to a helper function and may flag functions that validate the ID against a membership table. |
+| `agent_config_secret` | Critical | Local `scan-env` check: AI coding agent or MCP config file (`.claude/settings.json`, `.claude/settings.local.json`, `.cursor/mcp.json`, `.mcp.json`, `.vscode/mcp.json`) contains an `sb_secret_` key, a `service_role` JWT, or a `postgres(ql)?://user:password@` connection string. |
 
-The seven newer rules (`policy_true_writable`, `policy_user_metadata`, `policy_auth_per_row`, `auth_users_exposed`, `matview_api_exposed`, `public_bucket_listable`, and `policy_any_authenticated`) add only commented guidance to `fix.sql`; they never generate automatic DDL. You can also tag tables with `COMMENT ON TABLE public.x IS 'pii'` so `sensitive_anon_policy` does not depend on table naming (idea from a reader comment on the dev.to article). Overlap is intentional: `policy_true` keeps firing for the same policy as `policy_true_writable`, a materialized view over `auth.users` produces both `auth_users_exposed` and `matview_api_exposed` (same as regular views over `auth.users` overlap with `view_not_invoker`), and listable public buckets produce both `public_bucket` and `public_bucket_listable`. Policy expression checks are heuristics over PostgreSQL's deparsed SQL. The authentication performance check recognizes directly SELECT-wrapped calls; complex subqueries need manual review. The Auth exposure check follows direct dependencies and returns no findings when `auth.users` is absent.
+The nine newer catalog rules (`policy_true_writable`, `policy_user_metadata`, `policy_auth_per_row`, `auth_users_exposed`, `matview_api_exposed`, `public_bucket_listable`, `policy_any_authenticated`, `secret_column_exposed`, and `definer_trusts_id_arg`) add only commented guidance to `fix.sql`; they never generate automatic DDL. You can also tag tables with `COMMENT ON TABLE public.x IS 'pii'` so `sensitive_anon_policy` does not depend on table naming (idea from a reader comment on the dev.to article). Overlap is intentional: `policy_true` keeps firing for the same policy as `policy_true_writable`, a materialized view over `auth.users` produces both `auth_users_exposed` and `matview_api_exposed` (same as regular views over `auth.users` overlap with `view_not_invoker`), and listable public buckets produce both `public_bucket` and `public_bucket_listable`. Policy expression checks are heuristics over PostgreSQL's deparsed SQL. The authentication performance check recognizes directly SELECT-wrapped calls; complex subqueries need manual review. The Auth exposure check follows direct dependencies and returns no findings when `auth.users` is absent.
 
 ### Additional checks from `probe`
 
@@ -243,8 +248,8 @@ Tip: pass the anon key through the `SUPABASE_ANON_KEY` environment variable inst
 
 ## How it is tested
 
-- **Unit tests** (`pytest`): consent flag enforcement, GET/HEAD-only probing with no redirects, response size limits, row values and keys never written to disk, `service_role` JWT detection, local `scan-env` secret detection with masked values, `diff` drift comparison and severity gating, HTML/SQL escaping in reports, identifier quoting in `fix.sql`, English and Vietnamese output, all 15 catalog rules in reports/explanations, comment-only fixes for the newer rules, and the MCP tool surface (no `probe` exposed).
-- **Catalog query on a real PostgreSQL 15** (GitHub Actions): `tests/fixtures/seed_pg.sql` plants issues for all 15 rules next to safe controls. CI compares all 29 expected findings exactly, including overlapping view/matview, writable `USING (true)` policy, and bucket findings, and rejects extra or missing rows. Cases cover both JWT sources, all four authentication helpers, mixed wrapped/unwrapped calls, signed-in-only policies, writable vs read-only `USING (true)` policies, materialized views, public bucket listing policies, `pii` table comments, role grants, and safe `app_metadata`/sub-select/invoker controls. The query runs with read-only transactions, including separate cases without an `auth` schema or `auth.users` table.
+- **Unit tests** (`pytest`): consent flag enforcement, GET/HEAD-only probing with no redirects, response size limits, row values and keys never written to disk, `service_role` JWT detection, local `scan-env` secret detection (including agent/MCP config files) with masked values, `diff` drift comparison with `basis` failure-injection and severity gating, HTML/SQL escaping in reports, identifier quoting in `fix.sql`, English and Vietnamese output, all 17 catalog rules in reports/explanations, comment-only fixes for the newer rules, and the MCP tool surface (no `probe` exposed).
+- **Catalog query on a real PostgreSQL 15** (GitHub Actions): `tests/fixtures/seed_pg.sql` plants issues for all 17 rules next to safe controls. CI compares all 31 expected findings (including `basis` values) exactly, including overlapping view/matview, writable `USING (true)` policy, and bucket findings, and rejects extra or missing rows. Cases cover both JWT sources, all four authentication helpers, mixed wrapped/unwrapped calls, signed-in-only policies, writable vs read-only `USING (true)` policies, materialized views, public bucket listing policies, `pii` table comments, column-level `SELECT` revocations on secret columns, `SECURITY DEFINER` ID-argument checks, role grants, and safe `app_metadata`/sub-select/invoker controls. The query runs with read-only transactions, including separate cases without an `auth` schema or `auth.users` table.
 - **Abuse cases checked by hand**: running any command without `--i-own-this-project` exits before touching the network; passing a `service_role` key to `probe` is refused; the MCP server cannot reach the network.
 
 ## Ethical boundaries

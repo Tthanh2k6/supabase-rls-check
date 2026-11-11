@@ -22,7 +22,13 @@ def deduplicate_and_sort_findings(results: Sequence[dict[str, Any]]) -> list[dic
     unique = {json.dumps(f, sort_keys=True): f for r in results for f in r['findings']}
     return sorted(
         unique.values(),
-        key=lambda f: (SEVERITIES.index(RULES[f['rule']][0]), f['object_name'], f['rule']),
+        key=lambda f: (
+            SEVERITIES.index(RULES[f['rule']][0]),
+            f['object_name'],
+            f['rule'],
+            f.get('policy_name', ''),
+            f.get('basis', ''),
+        ),
     )
 
 
@@ -67,11 +73,14 @@ def fix_sql(findings: Sequence[dict[str, Any]], lang: str = 'en') -> str:
             'matview_api_exposed',
             'public_bucket_listable',
             'policy_any_authenticated',
+            'secret_column_exposed',
+            'definer_trusts_id_arg',
         ):
             target = clean(f['schema_name']) + '.' + clean(f['object_name'])
             policy = ': ' + clean(f['policy_name']) if f['policy_name'] else ''
+            basis = f" ({clean(f['basis'])})" if f.get('basis') else ''
             remedy = RULES[f['rule']][4 if lang == 'vi' else 2]
-            lines += [f"-- {f['rule']}: {target}{policy}", f'-- {remedy}']
+            lines += [f"-- {f['rule']}: {target}{policy}{basis}", f'-- {remedy}']
     lines += [
         '-- Review every other finding manually; do not infer fixes from names alone.',
         '-- Owner: self-check write access using SQL on staging, including two-user isolation.',
@@ -130,6 +139,8 @@ def report(
         rule = RULES[f['rule']]
         severity = VI_SEVERITIES[SEVERITIES.index(rule[0])] if vi else rule[0]
         evidence = f['rule'] + (': ' + f['policy_name'] if f['policy_name'] else '')
+        if f.get('basis'):
+            evidence += pick('; basis: ', '; cơ sở: ') + f['basis']
         if f['rule'] == 'anon_readable':
             evidence += pick('; columns: ', '; cột: ') + ', '.join(f['columns'])
             evidence += pick('; visible row count: ', '; số dòng thấy được: ') + str(

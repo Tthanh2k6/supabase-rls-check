@@ -1,5 +1,5 @@
 -- Seed fixture for PostgreSQL 15+ CI verification of src/supabase_rls_check/sql/check.sql.
--- Simulates Supabase roles, Auth, and storage.buckets/objects; exercises all 15 catalog rules
+-- Simulates Supabase roles, Auth, and storage.buckets/objects; exercises all 17 catalog rules
 -- alongside hardened negative-control objects and mixed policy expressions.
 
 BEGIN;
@@ -254,5 +254,54 @@ ALTER TABLE public.readonly_notes ENABLE ROW LEVEL SECURITY;
 CREATE POLICY anyone_reads_notes ON public.readonly_notes
   FOR SELECT TO authenticated
   USING (true);
+
+-- 15. secret_column_exposed: public table with a secret-like column selectable by anon/authenticated
+CREATE TABLE public.user_api_keys (
+  id uuid PRIMARY KEY,
+  user_id uuid NOT NULL,
+  openai_api_key text NOT NULL,
+  password_reset_sent_at timestamptz
+);
+ALTER TABLE public.user_api_keys ENABLE ROW LEVEL SECURITY;
+CREATE POLICY user_api_keys_owner ON public.user_api_keys
+  FOR SELECT TO authenticated
+  USING ((select auth.uid()) = user_id);
+GRANT SELECT ON public.user_api_keys TO authenticated;
+
+CREATE TABLE public.user_api_keys_revoked (
+  id uuid PRIMARY KEY,
+  user_id uuid NOT NULL,
+  openai_api_key text NOT NULL
+);
+ALTER TABLE public.user_api_keys_revoked ENABLE ROW LEVEL SECURITY;
+CREATE POLICY user_api_keys_revoked_owner ON public.user_api_keys_revoked
+  FOR SELECT TO authenticated
+  USING ((select auth.uid()) = user_id);
+REVOKE ALL ON public.user_api_keys_revoked FROM PUBLIC, anon, authenticated;
+GRANT SELECT (id, user_id) ON public.user_api_keys_revoked TO authenticated;
+REVOKE SELECT (openai_api_key) ON public.user_api_keys_revoked FROM PUBLIC, anon, authenticated;
+
+-- 16. definer_trusts_id_arg: SECURITY DEFINER function taking an ID argument without auth.uid()/auth.jwt()
+CREATE FUNCTION public.get_user_orders(p_user_id uuid)
+RETURNS SETOF uuid
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT id FROM public.payments WHERE id = p_user_id;
+$$;
+REVOKE ALL ON FUNCTION public.get_user_orders(uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.get_user_orders(uuid) TO authenticated;
+
+CREATE FUNCTION public.get_user_orders_safe(p_user_id uuid)
+RETURNS SETOF uuid
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT id FROM public.payments WHERE id = p_user_id AND p_user_id = auth.uid();
+$$;
+REVOKE ALL ON FUNCTION public.get_user_orders_safe(uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.get_user_orders_safe(uuid) TO authenticated;
 
 COMMIT;
