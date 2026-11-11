@@ -22,9 +22,18 @@ SKIP_DIRS: frozenset[str] = frozenset(
         'build',
         '.next',
         '.expo',
+        '.gradle',
+        '.turbo',
+        'coverage',
+        'web-build',
     }
 )
-SKIP_REL_DIRS: tuple[str, ...] = ('ios/Pods', 'android/build')
+SKIP_REL_DIRS: tuple[str, ...] = (
+    'ios/Pods',
+    'ios/build',
+    'android/build',
+    'android/app/build',
+)
 
 SOURCE_EXTENSIONS: frozenset[str] = frozenset(
     {'.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.vue', '.svelte'}
@@ -74,7 +83,11 @@ PUBLIC_VAR_IN_CODE_RE = re.compile(
 )
 SB_SECRET_RE = re.compile(r'\bsb_secret_[A-Za-z0-9_-]+')
 POSTGRES_URL_RE = re.compile(r'\bpostgres(?:ql)?://[^:/@\s"\'`]+:([^@\s"\'`]+)@[^\s"\'`]+', re.IGNORECASE)
-CLIENT_VAR_ASSIGN_RE = re.compile(r'\b([A-Za-z_$][A-Za-z0-9_$]*)\s*[:=]\s*["\'`]')
+# Optional closing quote after the name so JSON-style keys ("supabaseKey": "...") are inferred too.
+CLIENT_VAR_ASSIGN_RE = re.compile(r'\b([A-Za-z_$][A-Za-z0-9_$]*)["\']?\s*[:=]\s*["\'`]')
+POSTGRES_REASON = 'Postgres connection string'
+# Passwords that are really placeholders or env references, not literal credentials.
+PLACEHOLDER_PASSWORD_RE = re.compile(r'^(?:\$|\{|<|%|\[|\*+$)')
 
 
 def mask_secret(value: str) -> str:
@@ -213,10 +226,12 @@ def _extract_agent_secrets(text_value: str) -> list[tuple[str, str]]:
     for pg_match in POSTGRES_URL_RE.finditer(text_value):
         tok = pg_match.group()
         pw = pg_match.group(1)
+        if PLACEHOLDER_PASSWORD_RE.match(pw):
+            continue
         if tok not in seen:
             seen.add(tok)
             secret_val = pw if pw in mask_secret(tok) else tok
-            matches.append((secret_val, 'Postgres connection string'))
+            matches.append((secret_val, POSTGRES_REASON))
     return matches
 
 
@@ -263,7 +278,7 @@ def scan_env(path: str | Path) -> dict[str, Any]:
             if d in SKIP_DIRS:
                 continue
             rel_dir = (Path(dirpath) / d).relative_to(root).as_posix()
-            if rel_dir in SKIP_REL_DIRS or rel_dir.endswith(('/ios/Pods', '/android/build')):
+            if any(rel_dir == skip or rel_dir.endswith('/' + skip) for skip in SKIP_REL_DIRS):
                 continue
             kept_dirs.append(d)
         dirs[:] = kept_dirs
@@ -275,6 +290,9 @@ def scan_env(path: str | Path) -> dict[str, Any]:
             is_env = _is_env_file(filename)
             is_cfg = _is_config_file(filename)
             is_src = _is_source_file(filename)
+            # Client-bundled files: React Native / Expo JS and TS sources (src/, app/, components/ ...)
+            # and app.json / app.config.* / eas.json, which Expo embeds or reads at build time.
+            is_client_file = (is_src or is_cfg) and not is_env and _is_client_path(rel_path)
             if not (is_agent_cfg or is_env or is_cfg or is_src):
                 continue
 
@@ -324,43 +342,21 @@ def scan_env(path: str | Path) -> dict[str, Any]:
                             )
                             matched_tokens_on_line.add(val)
 
-                if is_src and _is_client_path(rel_path):
+                if is_client_file:
                     var_match = CLIENT_VAR_ASSIGN_RE.search(line)
                     inferred_var = var_match.group(1) if var_match else ''
                     if inferred_var.startswith(PUBLIC_PREFIXES):
                         inferred_var = ''
 
-                    for jwt_match in JWT.finditer(line):
-                        tok = jwt_match.group()
-                        if tok in matched_tokens_on_line:
-                            continue
-                        if jwt_role(tok) == 'service_role':
-                            matched_tokens_on_line.add(tok)
-                            findings.append(
-                                _build_env_finding(
-                                    'service_role_in_client_code',
-                                    rel_path,
-                                    line_no,
-                                    inferred_var,
-                                    tok,
-                                    'service_role JWT',
-                                )
-                            )
-
-                    for sb_match in SB_SECRET_RE.finditer(line):
-                        tok = sb_match.group()
+                    # Same detectors as agent config scanning: service_role JWTs (anon/publishable
+                    # keys are never matched), sb_secret_ keys and Postgres URLs with a password.
+                    for tok, reason in _extract_agent_secrets(line):
                         if tok in matched_tokens_on_line:
                             continue
                         matched_tokens_on_line.add(tok)
+                        rule_id = 'db_url_in_client_code' if reason == POSTGRES_REASON else 'service_role_in_client_code'
                         findings.append(
-                            _build_env_finding(
-                                'service_role_in_client_code',
-                                rel_path,
-                                line_no,
-                                inferred_var,
-                                tok,
-                                'sb_secret_ key',
-                            )
+                            _build_env_finding(rule_id, rel_path, line_no, inferred_var, tok, reason)
                         )
 
     return {'findings': findings, 'notes': [], 'observations': []}

@@ -1,7 +1,7 @@
 """Consent-gated, read-only Supabase RLS, policy, and anonymous exposure checks."""
 from __future__ import annotations
 
-__version__ = '0.6.0'
+__version__ = '0.6.1'
 
 from .cli import build_parser, main
 from .diff import diff_findings, format_diff_table, should_fail_on_new
@@ -10,6 +10,7 @@ from .probe import Scripts, fetch, jwt_role, probe, scan_site, validate_url
 from .report import deduplicate_and_sort_findings, fix_sql, quote_identifier, report
 from .rules import (
     ENV_RULES,
+    EXTENSION_REMEDY,
     JWT,
     NOTES,
     RULE_GUIDES,
@@ -19,6 +20,7 @@ from .rules import (
     VI_SEVERITIES,
     clean,
     explain_rule,
+    extension_owner,
     finding,
     get_check_sql_path,
     load_result,
@@ -27,6 +29,7 @@ from .rules import (
 
 __all__ = [
     'ENV_RULES',
+    'EXTENSION_REMEDY',
     'JWT',
     'NOTES',
     'PUBLIC_PREFIXES',
@@ -42,6 +45,7 @@ __all__ = [
     'deduplicate_and_sort_findings',
     'diff_findings',
     'explain_rule',
+    'extension_owner',
     'fetch',
     'finding',
     'fix_sql',

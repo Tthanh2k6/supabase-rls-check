@@ -11,9 +11,23 @@ WITH policy_expressions AS (
   WHERE p.schemaname = 'public' AND e.expression IS NOT NULL
 ), findings AS (
   SELECT 'rls_disabled'::text AS rule, n.nspname::text AS schema_name,
-         c.relname::text AS object_name, ''::text AS policy_name, ''::text AS basis
+         c.relname::text AS object_name, ''::text AS policy_name,
+         -- Tables that belong to an extension (pg_depend deptype 'e') cannot be altered by the
+         -- project owner on Supabase, so flag the extension instead of suggesting ENABLE RLS.
+         coalesce('owned by extension ' || ext.extname, '')::text AS basis
   FROM pg_catalog.pg_class c
   JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+  LEFT JOIN LATERAL (
+    SELECT e.extname
+    FROM pg_catalog.pg_depend d
+    JOIN pg_catalog.pg_extension e ON e.oid = d.refobjid
+    WHERE d.classid = 'pg_catalog.pg_class'::pg_catalog.regclass
+      AND d.objid = c.oid AND d.objsubid = 0
+      AND d.refclassid = 'pg_catalog.pg_extension'::pg_catalog.regclass
+      AND d.deptype = 'e'
+    ORDER BY e.extname
+    LIMIT 1
+  ) ext ON true
   WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND NOT c.relrowsecurity
   UNION ALL
   SELECT 'policy_true', schemaname::text, tablename::text, policyname::text, ''::text

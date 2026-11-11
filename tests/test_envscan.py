@@ -319,3 +319,123 @@ def test_agent_config_invalid_json_falls_back_to_text_search(tmp_path):
     assert item['line'] == 3
     assert item['masked_value'] == f'{sb_secret[:6]}…{sb_secret[-4:]}'
     assert sb_secret not in json.dumps(result)
+
+
+def _write(root, rel, text):
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding='utf-8')
+    return path
+
+
+def test_react_native_app_json_and_app_config_files(tmp_path):
+    sr_jwt = build_jwt('service_role')
+    anon_jwt = build_jwt('anon')
+    sb_secret = 'sb_secret_rn_live_secret_4242'
+    _write(
+        tmp_path,
+        'app.json',
+        json.dumps(
+            {
+                'expo': {
+                    'extra': {
+                        'supabaseUrl': 'https://example.supabase.co',
+                        'supabaseAnonKey': anon_jwt,
+                        'supabasePublishable': 'sb_publishable_demo123456',
+                        'supabaseServiceKey': sr_jwt,
+                    }
+                }
+            },
+            indent=2,
+        ),
+    )
+    _write(tmp_path, 'app.config.js', f'export default {{ extra: {{ adminKey: "{sb_secret}" }} }};\n')
+    # The anon key is expected in a client app and must not be reported.
+    _write(tmp_path, 'app.config.ts', f'export default {{ extra: {{ anonKey: "{anon_jwt}" }} }};\n')
+    result = envscan.scan_env(tmp_path)
+    by_file = {(f['file'], f['rule']): f for f in result['findings']}
+    assert set(by_file) == {
+        ('app.json', 'service_role_in_client_code'),
+        ('app.config.js', 'service_role_in_client_code'),
+    }
+    app_json = by_file[('app.json', 'service_role_in_client_code')]
+    assert app_json['variable'] == 'supabaseServiceKey'
+    assert app_json['severity'] == 'Critical'
+    assert app_json['masked_value'] == f'{sr_jwt[:6]}…{sr_jwt[-4:]}'
+    dumped = json.dumps(result)
+    for secret in (sr_jwt, sb_secret, anon_jwt):
+        assert secret not in dumped
+
+
+def test_react_native_src_layouts_and_postgres_urls(tmp_path):
+    password = 'hunter2Hunter2'
+    url = f'postgresql://postgres:{password}@db.example.supabase.co:5432/postgres'
+    sr_jwt = build_jwt('service_role')
+    _write(tmp_path, 'src/lib/db.ts', f'export const DB = "{url}";\n')
+    _write(tmp_path, 'app/(tabs)/index.tsx', f'const key = "{sr_jwt}";\n')
+    _write(tmp_path, 'screens/Home.jsx', 'const dbUrl = "postgres://user:${DB_PASSWORD}@localhost/db";\n')
+    _write(tmp_path, 'components/Safe.js', 'const u = "postgres://readonly@localhost/db";\n')
+    result = envscan.scan_env(tmp_path)
+    items = {(f['file'], f['rule']): f for f in result['findings']}
+    assert set(items) == {
+        ('src/lib/db.ts', 'db_url_in_client_code'),
+        ('app/(tabs)/index.tsx', 'service_role_in_client_code'),
+    }
+    db_item = items[('src/lib/db.ts', 'db_url_in_client_code')]
+    assert db_item['severity'] == 'Critical'
+    assert db_item['variable'] == 'DB'
+    assert db_item['reason'] == 'Postgres connection string'
+    assert db_item['line'] == 1
+    dumped = json.dumps(result)
+    assert password not in dumped
+    assert url not in dumped
+    assert sr_jwt not in dumped
+
+
+def test_react_native_scan_skips_build_output_and_server_paths(tmp_path):
+    sr_jwt = build_jwt('service_role')
+    url = 'postgresql://postgres:hunter2Hunter2@db.example.com/postgres'
+    for rel in (
+        'node_modules/pkg/index.js',
+        'android/app/build/generated/Config.js',
+        'ios/build/Config.js',
+        'ios/Pods/Pod/Config.js',
+        'web-build/static/main.js',
+        '.git/hooks/note.js',
+        'backend/db.ts',
+        'supabase/functions/x/index.ts',
+    ):
+        _write(tmp_path, rel, f'const a = "{sr_jwt}"; const b = "{url}";\n')
+    (tmp_path / 'src').mkdir()
+    (tmp_path / 'src' / 'blob.js').write_bytes(b'\x00' + sr_jwt.encode())
+    assert envscan.scan_env(tmp_path)['findings'] == []
+
+
+def test_react_native_scan_cli_output_masks_values_and_ignores_publishable_keys(tmp_path, capsys):
+    password = 'hunter2Hunter2'
+    url = f'postgresql://postgres:{password}@db.example.supabase.co:5432/postgres'
+    _write(
+        tmp_path,
+        'src/config.ts',
+        f'export const anon = "{build_jwt("anon")}";\n'
+        'export const pub = "sb_publishable_abc123def456";\n'
+        f'export const dsn = "{url}";\n',
+    )
+    out_json = tmp_path / 'envscan.json'
+    assert audit.main(['scan-env', str(tmp_path), '--out', str(out_json)]) == 0
+    table = capsys.readouterr().out
+    assert 'db_url_in_client_code' in table
+    assert 'service_role_in_client_code' not in table
+    assert password not in table
+    assert url not in table
+    assert password not in out_json.read_text(encoding='utf-8')
+    assert audit.load_result(out_json)['findings'][0]['rule'] == 'db_url_in_client_code'
+
+
+def test_agent_config_placeholder_passwords_are_not_flagged(tmp_path):
+    _write(
+        tmp_path,
+        '.mcp.json',
+        json.dumps({'mcpServers': {'db': {'args': ['postgresql://user:${DB_PASSWORD}@host/db']}}}),
+    )
+    assert envscan.scan_env(tmp_path)['findings'] == []
