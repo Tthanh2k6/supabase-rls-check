@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .rules import NOTES, RULES, SEVERITIES, VI_SEVERITIES, clean
+from .rules import EXTENSION_REMEDY, NOTES, RULES, SEVERITIES, VI_SEVERITIES, clean, extension_owner
 
 
 def quote_identifier(value: str) -> str:
@@ -47,11 +47,17 @@ def fix_sql(findings: Sequence[dict[str, Any]], lang: str = 'en') -> str:
         '-- Check column type (UUID), tenant model, existing policies and application flows.',
         'BEGIN;',
     ]
+    # Tables owned by an extension cannot be altered by the project owner ("must be owner"),
+    # so they get comment-only guidance below instead of an ENABLE ROW LEVEL SECURITY statement.
+    extension_tables = {
+        (f['schema_name'], f['object_name']): extension_owner(f) for f in findings if extension_owner(f)
+    }
     tables = sorted(
         {
             (f['schema_name'], f['object_name'])
             for f in findings
             if f['rule'] in ('rls_disabled', 'policy_true', 'sensitive_anon_policy')
+            and (f['schema_name'], f['object_name']) not in extension_tables
         }
     )
     for schema, table in tables:
@@ -63,6 +69,15 @@ def fix_sql(findings: Sequence[dict[str, Any]], lang: str = 'en') -> str:
             '--   FOR ALL TO authenticated',
             '--   USING ((SELECT auth.uid()) = user_id)',
             '--   WITH CHECK ((SELECT auth.uid()) = user_id);',
+        ]
+    for (schema, table), extension in sorted(extension_tables.items()):
+        target = clean(schema) + '.' + clean(table)
+        lines += [
+            f'-- rls_disabled: {target} (owned by extension {clean(extension)})',
+            f'-- {EXTENSION_REMEDY[1 if lang == "vi" else 0]}',
+            '-- Review only (relocatable extensions): CREATE SCHEMA IF NOT EXISTS extensions;',
+            f'-- Review only (relocatable extensions): ALTER EXTENSION {quote_identifier(extension)} SET SCHEMA extensions;',
+            '-- Guidance: https://github.com/supabase/supabase/discussions/52767',
         ]
     for f in findings:
         if f['rule'] in (
@@ -147,7 +162,8 @@ def report(
                 f['row_count'] if f['row_count'] is not None else '?'
             )
         target = '.'.join(x for x in (f['schema_name'], f['object_name']) if x)
-        table_rows.append([severity, rule[3 if vi else 1] + ' — ' + target, evidence, rule[4 if vi else 2]])
+        remedy = EXTENSION_REMEDY[1 if vi else 0] if extension_owner(f) else rule[4 if vi else 2]
+        table_rows.append([severity, rule[3 if vi else 1] + ' — ' + target, evidence, remedy])
     counts = ' / '.join(
         f'{(VI_SEVERITIES if vi else SEVERITIES)[i]}: {sum(RULES[f["rule"]][0] == s for f in findings)}'
         for i, s in enumerate(SEVERITIES)

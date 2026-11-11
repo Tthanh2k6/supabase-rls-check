@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-11-12
+
+### Added
+- `check.sql` detects tables in `public` that belong to an extension through `pg_depend` (`deptype = 'e'`). `rls_disabled` still reports them, with `basis` set to `owned by extension <name>`; `fix.sql` and the reports recommend moving the extension out of `public` into an `extensions` schema (Supabase discussion #52767) instead of suggesting `ALTER TABLE ... ENABLE ROW LEVEL SECURITY`, which fails on Supabase with "must be owner". Detection covers direct extension members only, and some extensions cannot be relocated.
+- `scan-env` now scans React Native / Expo projects more completely: `app.json`, `app.config.*`, and `eas.json` are checked for hardcoded `service_role` JWTs and `sb_secret_` keys (`service_role_in_client_code`), and client sources plus config are checked for Postgres connection strings with a password through the new `db_url_in_client_code` rule (Critical). The anon and publishable keys are never reported. Build output folders such as `web-build`, `android/app/build`, and `ios/build` are skipped. The scan is pattern-based and can miss obfuscated or split keys. Values stay masked.
+- `scripts/e2e_diff.py` and a `diff-e2e` CI job: against a real PostgreSQL 15 it applies a fixture schema, builds a report, reruns unchanged (`diff --fail-on-new high` exits 0), adds a `pii` table comment, reruns, and asserts that the same command exits non-zero with the escalated `sensitive_anon_policy` finding.
+- PostgreSQL 15 fixture for an extension-owned table (32 expected catalog findings) and unit tests for all three changes.
+
+### Changed
+- Because `basis` is part of the `diff` key, a baseline exported before 0.6.1 lists an extension-owned table with an empty `basis`; the first diff against it reports that table as new (with the extension basis) and the old entry as resolved. Re-export the baseline once to clear it.
+- Connection strings whose password is a placeholder such as `${DB_PASSWORD}` are no longer flagged in agent config files or client code.
+
 ## [0.6.0] - 2026-11-11
 
 ### Added

@@ -74,6 +74,7 @@ def test_all_sql_checks_csv_json(tmp_path):
     assert by_rule_obj[('secret_column_exposed', 'user_api_keys')] == 'openai_api_key'
     assert by_rule_obj[('definer_trusts_id_arg', 'get_user_orders(p_user_id uuid)')] == 'p_user_id'
     assert by_rule_obj[('rls_disabled', 'todos')] == ''
+    assert by_rule_obj[('rls_disabled', 'spatial_ref_sys')] == 'owned by extension pg_trgm'
     path = tmp_path / 'export.json'
     path.write_text(json.dumps(result['findings']), encoding='utf-8')
     assert audit.load_result(path) == result
@@ -334,8 +335,8 @@ def test_sql_print_bundled_check_query(capsys):
 
 def test_mcp_core_analyze_and_explain_without_sdk(tmp_path):
     summary = mcp_server.analyze_sql_export(str(FIXTURE))
-    assert summary['total_findings'] == 31
-    assert summary['counts'] == {'Critical': 3, 'High': 15, 'Medium': 7, 'Low': 6}
+    assert summary['total_findings'] == 32
+    assert summary['counts'] == {'Critical': 3, 'High': 16, 'Medium': 7, 'Low': 6}
     assert {item['rule'] for item in summary['findings']} == set(audit.SQL_RULES)
     assert all('basis' in item for item in summary['findings'])
     bases = {(item['rule'], item['object_name']): item['basis'] for item in summary['findings']}
@@ -343,6 +344,7 @@ def test_mcp_core_analyze_and_explain_without_sdk(tmp_path):
     assert bases[('sensitive_anon_policy', 'journal_entries')] == "table comment tag 'pii'"
     assert bases[('secret_column_exposed', 'user_api_keys')] == 'openai_api_key'
     assert bases[('definer_trusts_id_arg', 'get_user_orders(p_user_id uuid)')] == 'p_user_id'
+    assert bases[('rls_disabled', 'spatial_ref_sys')] == 'owned by extension pg_trgm'
     assert 'ROLLBACK;' in summary['fix_sql']
 
     explanation = mcp_server.explain_rule('definer_anon_exec')
@@ -477,6 +479,7 @@ def test_new_catalog_rule_reports_and_manual_fixes(tmp_path, lang, rule, severit
     ('secret_column_exposed', 'Medium', 'plaintext secret', 'REVOKE SELECT (col) ON public.t FROM anon, authenticated'),
     ('definer_trusts_id_arg', 'Medium', 'Review needed', 'auth.uid()'),
     ('agent_config_secret', 'Critical', '.claude/settings.json', 'Rotate'),
+    ('db_url_in_client_code', 'Critical', 'app.config.*', 'Reset the database password'),
 ])
 def test_new_catalog_rule_explanations_and_mcp(rule, severity, explanation, remedy):
     text = audit.explain_rule(rule)
@@ -487,3 +490,52 @@ def test_new_catalog_rule_explanations_and_mcp(rule, severity, explanation, reme
     vi_text = audit.explain_rule(rule, lang='vi')
     assert audit.RULES[rule][3] in vi_text
     assert audit.RULES[rule][4] in vi_text
+
+
+def test_check_sql_detects_extension_membership_through_pg_depend():
+    sql = audit.read_check_sql()
+    assert "d.classid = 'pg_catalog.pg_class'::pg_catalog.regclass" in sql
+    assert "d.deptype = 'e'" in sql
+    assert "'owned by extension ' || ext.extname" in sql
+    # Reporting stays on for extension-owned tables: the rls_disabled branch has no extension exclusion.
+    assert 'NOT c.relrowsecurity' in sql
+
+
+@pytest.mark.parametrize('lang', ['en', 'vi'])
+def test_fix_sql_never_emits_enable_rls_for_extension_owned_tables(tmp_path, lang):
+    result = {
+        'findings': [
+            audit.finding('rls_disabled', 'public', 'spatial_ref_sys', '', 'owned by extension postgis'),
+            audit.finding('rls_disabled', 'public', 'todos'),
+            # A second rule on the same extension table must not bring the ALTER back.
+            audit.finding('policy_true', 'public', 'spatial_ref_sys', 'allow_all'),
+        ],
+        'notes': [],
+        'observations': [],
+    }
+    audit.report([result], tmp_path, lang=lang)
+    sql = (tmp_path / 'fix.sql').read_text(encoding='utf-8')
+    statements = [line for line in sql.splitlines() if line and not line.startswith('--')]
+    assert 'ALTER TABLE "public"."todos" ENABLE ROW LEVEL SECURITY;' in statements
+    assert not any('spatial_ref_sys' in line for line in statements)
+    assert '-- rls_disabled: public.spatial_ref_sys (owned by extension postgis)' in sql
+    assert 'extensions' in sql
+    assert 'discussions/52767' in sql
+    assert audit.EXTENSION_REMEDY[1 if lang == 'vi' else 0] in sql
+    markdown = (tmp_path / 'report.md').read_text(encoding='utf-8')
+    assert audit.EXTENSION_REMEDY[1 if lang == 'vi' else 0][:30] in markdown
+    assert 'owned by extension postgis' in (tmp_path / 'report.html').read_text(encoding='utf-8')
+
+
+def test_extension_owner_only_applies_to_rls_disabled():
+    owned = audit.finding('rls_disabled', 'public', 't', '', 'owned by extension postgis')
+    assert audit.extension_owner(owned) == 'postgis'
+    assert audit.extension_owner(audit.finding('rls_disabled', 'public', 't')) == ''
+    other = audit.finding('policy_true', 'public', 't', 'p', 'owned by extension postgis')
+    assert audit.extension_owner(other) == ''
+
+
+def test_explain_rls_disabled_mentions_extension_owned_tables():
+    text = audit.explain_rule('rls_disabled')
+    assert 'owned by extension' in text
+    assert 'pg_depend' in text

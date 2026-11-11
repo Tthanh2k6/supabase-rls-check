@@ -113,6 +113,7 @@ jobs:
               ("public_bucket", "storage", "documents", "", ""),
               ("public_bucket_listable", "storage", "avatars", "public_list_avatars", ""),
               ("public_extension", "public", "pg_trgm", "", ""),
+              ("rls_disabled", "public", "spatial_ref_sys", "", "owned by extension pg_trgm"),
               ("rls_disabled", "public", "todos", "", ""),
               ("secret_column_exposed", "public", "user_api_keys", "", "openai_api_key"),
               ("sensitive_anon_policy", "public", "journal_entries", "anon_journal", "table comment tag 'pii'"),
@@ -202,3 +203,41 @@ jobs:
           test "$GATED" = "failure"
           test -s rls-report/report.html
           echo "findings=$FINDINGS gated=$GATED"
+
+  diff-e2e:
+    name: diff end-to-end on PostgreSQL 15
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_USER: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package and psql client
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .
+          which psql || (sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client)
+
+      - name: Run the diff end-to-end script (pii comment must escalate)
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: "5432"
+          PGUSER: postgres
+        run: python scripts/e2e_diff.py

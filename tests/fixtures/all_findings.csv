@@ -23,6 +23,7 @@ public_bucket,storage,avatars,,
 public_bucket,storage,documents,,
 public_bucket_listable,storage,avatars,public_list_avatars,
 public_extension,public,pg_trgm,,
+rls_disabled,public,spatial_ref_sys,,owned by extension pg_trgm
 rls_disabled,public,todos,,
 secret_column_exposed,public,user_api_keys,,openai_api_key
 sensitive_anon_policy,public,journal_entries,anon_journal,table comment tag 'pii'

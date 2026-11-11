@@ -164,6 +164,13 @@ RULES: dict[str, tuple[str, str, str, str, str]] = {
         'Mã nguồn client chứa trực tiếp khóa service_role hoặc khóa bí mật Supabase',
         'Chuyển khóa bí mật sang mã phía máy chủ (Edge Function / API route), đổi/xoay vòng khóa đã lộ ngay lập tức và chỉ giữ khóa anon/publishable ở phía client.',
     ),
+    'db_url_in_client_code': (
+        'Critical',
+        'Client or app config contains a Postgres connection string with a password',
+        'Remove the connection string from the app, rotate the database password now, and reach the database only from server-side code or through the Supabase API with the anon/publishable key.',
+        'Mã nguồn hoặc cấu hình app chứa chuỗi kết nối Postgres kèm mật khẩu',
+        'Xóa chuỗi kết nối khỏi app, đổi mật khẩu cơ sở dữ liệu ngay lập tức và chỉ truy cập cơ sở dữ liệu từ mã phía máy chủ hoặc qua Supabase API với khóa anon/publishable.',
+    ),
     'agent_config_secret': (
         'Critical',
         'AI coding agent or MCP config file contains a database or Supabase secret',
@@ -197,6 +204,7 @@ ENV_RULES: tuple[str, ...] = (
     'public_env_service_role',
     'public_env_secret_key',
     'service_role_in_client_code',
+    'db_url_in_client_code',
     'agent_config_secret',
 )
 
@@ -229,7 +237,11 @@ RULE_GUIDES: dict[str, dict[str, str]] = {
         ),
         'caveat': (
             'Occasionally intentional for read-only public lookup tables, though enabling RLS with an '
-            'explicit SELECT policy is safer against accidental write grants.'
+            'explicit SELECT policy is safer against accidental write grants. When the table belongs to an '
+            'extension (for example PostGIS spatial_ref_sys), basis reads "owned by extension <name>": the '
+            'exposure is still reported, but ENABLE ROW LEVEL SECURITY fails there with "must be owner" on '
+            'Supabase, so the guidance is to move the extension out of public into an extensions schema. '
+            'Detection relies on pg_depend and only covers tables that are direct members of an extension.'
         ),
         'example': (
             'ALTER TABLE public.your_table ENABLE ROW LEVEL SECURITY;\n'
@@ -614,12 +626,35 @@ RULE_GUIDES: dict[str, dict[str, str]] = {
         ),
         'caveat': (
             'Files under supabase/functions/, server/, api/, scripts/, and backend/ are excluded by path '
-            'heuristic. Secrets in server code should still be read from environment variables.'
+            'heuristic. Secrets in server code should still be read from environment variables. The scan '
+            'also covers app.json, app.config.* and eas.json. The anon/publishable key is expected in a '
+            'client app and is not reported. Detection is pattern-based and can miss obfuscated or '
+            'split-up keys.'
         ),
         'example': (
             '1. Move the secret and privileged logic to server-side code (Edge Function or API route).\n'
             '2. Rotate the leaked service_role / sb_secret_ key in the Supabase Dashboard now.\n'
             '3. Keep only the anon/publishable key in the client.'
+        ),
+    },
+    'db_url_in_client_code': {
+        'source': 'Local public-env scan (scan-env)',
+        'why': (
+            'A postgres:// or postgresql:// connection string with an inline password was found in a '
+            'client-bundled file (React Native / Expo source, app.json, app.config.*, or eas.json). '
+            'Anything shipped in an app bundle can be extracted, and the database password grants direct '
+            'database access that bypasses PostgREST and Row Level Security.'
+        ),
+        'caveat': (
+            'Pattern-based: only literal URLs with a user:password@ part on a single line are matched, '
+            'and obfuscated, concatenated, or encoded values can be missed. Placeholders such as '
+            '${DB_PASSWORD} are ignored. Files under supabase/functions/, server/, api/, scripts/, and '
+            'backend/ are excluded by path heuristic.'
+        ),
+        'example': (
+            '1. Remove the connection string from the app source and config.\n'
+            '2. Reset the database password in the Supabase Dashboard now.\n'
+            '3. Query data through supabase-js with the anon/publishable key and RLS, or from server-side code.'
         ),
     },
     'agent_config_secret': {
@@ -642,6 +677,27 @@ RULE_GUIDES: dict[str, dict[str, str]] = {
         ),
     },
 }
+
+
+EXTENSION_BASIS_PREFIX = 'owned by extension '
+
+# Remediation for rls_disabled findings on tables owned by an extension (English, Vietnamese).
+EXTENSION_REMEDY: tuple[str, str] = (
+    'The table belongs to an extension, so ENABLE ROW LEVEL SECURITY fails with "must be owner" on '
+    'Supabase. Move the extension out of public into an extensions schema (for example a new "extensions" '
+    'schema) so PostgREST no longer exposes its tables. Check that the extension is relocatable first.',
+    'Bảng thuộc một extension nên ENABLE ROW LEVEL SECURITY sẽ lỗi "must be owner" trên Supabase. '
+    'Chuyển extension khỏi public sang schema extensions để PostgREST không còn lộ bảng này. '
+    'Kiểm tra trước xem extension có di chuyển được (relocatable) không.',
+)
+
+
+def extension_owner(item: dict[str, Any]) -> str:
+    """Return the extension name for an rls_disabled finding owned by an extension, else ''."""
+    if item.get('rule') != 'rls_disabled':
+        return ''
+    basis = item.get('basis') or ''
+    return basis[len(EXTENSION_BASIS_PREFIX):] if basis.startswith(EXTENSION_BASIS_PREFIX) else ''
 
 
 def clean(value: str) -> str:

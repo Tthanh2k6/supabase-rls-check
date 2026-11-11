@@ -249,3 +249,29 @@ def test_diff_backward_compatibility_without_basis(tmp_path):
     current_new = _write_json(tmp_path / 'current_new.json', [audit.finding('rls_disabled', 'public', 'todos')])
     res = diff_mod.diff_findings(legacy_old, current_new)
     assert res == {'new': [], 'resolved': [], 'unchanged_count': 1}
+
+
+def test_diff_basis_change_to_extension_owned_reports_new_and_resolved(tmp_path, capsys):
+    # A pre-0.6.1 export has no extension basis; a 0.6.1 export labels the same table.
+    old = _write_json(tmp_path / 'old.json', [audit.finding('rls_disabled', 'public', 'spatial_ref_sys')])
+    new = _write_json(
+        tmp_path / 'new.json',
+        [audit.finding('rls_disabled', 'public', 'spatial_ref_sys', '', 'owned by extension postgis')],
+    )
+    res = diff_mod.diff_findings(old, new)
+    assert res['unchanged_count'] == 0
+    assert [f['basis'] for f in res['new']] == ['owned by extension postgis']
+    assert [f['basis'] for f in res['resolved']] == ['']
+    # Documented consequence: a basis change is a new High finding, so the gate trips once.
+    assert audit.main(['diff', '--old', str(old), '--new', str(new), '--fail-on-new', 'high']) == 1
+    assert 'owned by extension postgis' in capsys.readouterr().out
+    # Two 0.6.1 runs with the same extension basis are unchanged and never trip the gate.
+    assert diff_mod.diff_findings(new, new) == {'new': [], 'resolved': [], 'unchanged_count': 1}
+    assert audit.main(['diff', '--old', str(new), '--new', str(new), '--fail-on-new', 'low']) == 0
+    capsys.readouterr()
+    # Moving the extension out of public removes the finding: resolved only, exit 0.
+    gone = _write_json(tmp_path / 'gone.json', [])
+    res = diff_mod.diff_findings(new, gone)
+    assert res['new'] == [] and len(res['resolved']) == 1
+    assert audit.main(['diff', '--old', str(new), '--new', str(gone), '--fail-on-new', 'low']) == 0
+    capsys.readouterr()

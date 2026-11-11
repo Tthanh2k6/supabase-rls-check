@@ -1,5 +1,5 @@
 -- Seed fixture for PostgreSQL 15+ CI verification of src/supabase_rls_check/sql/check.sql.
--- Simulates Supabase roles, Auth, and storage.buckets/objects; exercises all 17 catalog rules
+-- Simulates Supabase roles, Auth, and storage.buckets/objects; exercises all 17 catalog rules (including an extension-owned table)
 -- alongside hardened negative-control objects and mixed policy expressions.
 
 BEGIN;
@@ -303,5 +303,14 @@ AS $$
 $$;
 REVOKE ALL ON FUNCTION public.get_user_orders_safe(uuid) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.get_user_orders_safe(uuid) TO authenticated;
+
+-- 17. rls_disabled on an extension-owned table: reported with basis "owned by extension <name>".
+-- ALTER EXTENSION ... ADD TABLE makes the table an extension member (pg_depend deptype 'e'),
+-- the same catalog state as PostGIS's spatial_ref_sys, without needing PostGIS in the CI image.
+CREATE TABLE public.spatial_ref_sys (
+  srid integer PRIMARY KEY,
+  srtext text
+);
+ALTER EXTENSION pg_trgm ADD TABLE public.spatial_ref_sys;
 
 COMMIT;
