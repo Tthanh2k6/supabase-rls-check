@@ -370,7 +370,7 @@ def test_mcp_server_registers_only_read_only_local_tools_never_probe():
         def __init__(self, name):
             self.name = name
 
-        def tool(self):
+        def tool(self, **kwargs):
             def decorator(fn):
                 registered.append(fn.__name__)
                 return fn
@@ -384,10 +384,27 @@ def test_mcp_server_registers_only_read_only_local_tools_never_probe():
     assert not hasattr(mcp_server, 'probe')
 
 
+def test_mcp_tools_declare_all_four_boolean_annotation_hints():
+    import asyncio
+
+    pytest.importorskip('mcp')
+    server = mcp_server.create_mcp_server()
+    tools = asyncio.run(server.list_tools())
+    assert sorted(t.name for t in tools) == sorted(mcp_server.MCP_TOOL_NAMES)
+    for tool in tools:
+        assert tool.title, tool.name
+        dumped = tool.annotations.model_dump(by_alias=True)
+        for hint in ('readOnlyHint', 'destructiveHint', 'idempotentHint', 'openWorldHint'):
+            assert isinstance(dumped.get(hint), bool), (tool.name, hint)
+        assert dumped['readOnlyHint'] is True and dumped['destructiveHint'] is False
+        assert dumped['idempotentHint'] is True and dumped['openWorldHint'] is False
+
+
 def test_mcp_cli_reports_install_hint_when_mcp_missing(monkeypatch, capsys):
     monkeypatch.setitem(sys.modules, 'mcp', None)
     monkeypatch.setitem(sys.modules, 'mcp.server', None)
     monkeypatch.setitem(sys.modules, 'mcp.server.fastmcp', None)
+    monkeypatch.setitem(sys.modules, 'mcp.server.mcpserver', None)
     assert audit.main(['mcp']) == 1
     err = capsys.readouterr().err
     assert 'pip install "supabase-rls-check[mcp]"' in err

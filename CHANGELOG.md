@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- All four MCP tools now declare `readOnlyHint=true`, `destructiveHint=false`, `idempotentHint=true`, and `openWorldHint=false` (plus a human `title`), as required by MCP directories that reject tools missing a hint. A test asserts the four boolean hints on every tool.
+
 ## [0.6.1] - 2026-11-12
 
 ### Added
