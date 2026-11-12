@@ -34,15 +34,18 @@ MCP_TOOL_TITLES: dict[str, str] = {
 
 def _tool_annotations(title: str) -> Any:
     """All four tools only read local input: read-only, non-destructive, idempotent, closed-world."""
-    from mcp.types import ToolAnnotations
-
-    return ToolAnnotations(
+    hints = dict(
         title=title,
         readOnlyHint=True,
         destructiveHint=False,
         idempotentHint=True,
         openWorldHint=False,
     )
+    try:
+        from mcp.types import ToolAnnotations
+    except ImportError:  # SDK not installed (e.g. a test double server): pass plain hints
+        return hints
+    return ToolAnnotations(**hints)
 
 
 def analyze_sql_export(path: str) -> dict[str, Any]:
