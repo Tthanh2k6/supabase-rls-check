@@ -2,7 +2,7 @@
 
 <!-- mcp-name: io.github.Tthanh2k6/supabase-rls-check -->
 
-[![PyPI](https://img.shields.io/pypi/v/supabase-rls-check)](https://pypi.org/project/supabase-rls-check/) [![Glama MCP server](https://glama.ai/mcp/servers/Tthanh2k6/supabase-rls-check/badges/score.svg)](https://glama.ai/mcp/servers/Tthanh2k6/supabase-rls-check)
+[![PyPI](https://img.shields.io/pypi/v/supabase-rls-check)](https://pypi.org/project/supabase-rls-check/) [![Glama MCP server](https://glama.ai/mcp/servers/Tthanh2k6/supabase-rls-check/badges/score.svg)](https://glama.ai/mcp/servers/Tthanh2k6/supabase-rls-check) [![Supabase RLS Check MCP on mcprush](https://mcprush.com/badge/supabase-rls-check-mcp/score.svg)](https://mcprush.com/to/supabase-rls-check-mcp?ref=badge)
 
 Consent-gated, read-only configuration and anonymous-exposure checks for Supabase projects (PostgreSQL 15+, Python 3.11+). No database password or `service_role` key required.
 
