@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-11-13
+
+### Changed
+- MCP tools are registered with `add_tool()` instead of `tool()(fn)`, so static scanners and MCP catalogues (for example MCP Trust Checker on mcprush) can list all four tools; titles, annotations and behaviour are unchanged.
+
 ## [0.6.2] - 2026-11-13
 
 ### Changed

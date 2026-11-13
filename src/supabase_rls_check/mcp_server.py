@@ -206,7 +206,7 @@ def create_mcp_server(fastmcp_cls: Any = None) -> Any:
     server = fastmcp_cls('supabase-rls-check')
     for fn in (analyze_sql_export, explain_rule, scan_public_env, diff_results):
         title = MCP_TOOL_TITLES[fn.__name__]
-        server.tool(title=title, annotations=_tool_annotations(title))(fn)
+        server.add_tool(fn, title=title, annotations=_tool_annotations(title))
     return server
 
 

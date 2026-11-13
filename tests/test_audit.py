@@ -370,12 +370,12 @@ def test_mcp_server_registers_only_read_only_local_tools_never_probe():
         def __init__(self, name):
             self.name = name
 
-        def tool(self, **kwargs):
-            def decorator(fn):
-                registered.append(fn.__name__)
-                return fn
-
-            return decorator
+        # add_tool(fn, ...) rather than tool(...)(fn): static scanners such as
+        # MCP Trust Checker (mcprush) only read the add_tool / @tool shapes.
+        def add_tool(self, fn, **kwargs):
+            assert kwargs.get('title'), fn.__name__
+            assert kwargs.get('annotations') is not None, fn.__name__
+            registered.append(fn.__name__)
 
     server = mcp_server.create_mcp_server(DummyFastMCP)
     assert server.name == 'supabase-rls-check'

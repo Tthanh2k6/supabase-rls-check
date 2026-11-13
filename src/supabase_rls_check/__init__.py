@@ -1,7 +1,7 @@
 """Consent-gated, read-only Supabase RLS, policy, and anonymous exposure checks."""
 from __future__ import annotations
 
-__version__ = '0.6.2'
+__version__ = '0.6.3'
 
 from .cli import build_parser, main
 from .diff import diff_findings, format_diff_table, should_fail_on_new
