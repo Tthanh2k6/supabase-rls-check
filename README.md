@@ -20,7 +20,7 @@ Requires Python 3.11 or newer.
 pipx install supabase-rls-check      # or: uvx supabase-rls-check --help
 ```
 
-Optional Model Context Protocol (MCP) server support (`mcp>=1.2`):
+Optional Model Context Protocol (MCP) server support (`mcp>=1.10`):
 
 ```bash
 pipx install "supabase-rls-check[mcp]"
