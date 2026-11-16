@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or usage help
+    url: https://github.com/Tthanh2k6/supabase-rls-check/discussions
+    about: Ask in GitHub Discussions.
+  - name: Security issue
+    url: https://github.com/Tthanh2k6/supabase-rls-check/security/advisories/new
+    about: Report privately. Do not open a public issue.

@@ -1,0 +1,33 @@
+name: Feature request
+description: Propose a new rule, option or output change.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The tool stays read-only, asks for consent before touching a project, and never keeps row values or secrets. See CONTRIBUTING.md. Do not paste keys or real table data here.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What RLS mistake or workflow step does the tool miss or make hard today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: For a new rule, give the SQL pattern it should flag and an example that should and should not fire. For a command or option, show a sample call.
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Effect on the safety rules
+      description: Does it need a new request, a write, or a stored value? Say how it stays read-only and keeps secrets and rows out of results. Write "none" if it does not.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives tried

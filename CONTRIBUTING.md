@@ -21,3 +21,7 @@ python -m pytest -q
 ```
 
 All unit tests run offline and forbid real network requests via an `autouse` fixture. If you modify `src/supabase_rls_check/sql/check.sql`, update `tests/fixtures/seed_pg.sql` and `tests/fixtures/all_findings.csv` so PostgreSQL 15 CI stays in sync. `scripts/e2e_diff.py` runs the `diff` end-to-end check against a local PostgreSQL (`PGHOST`/`PGUSER` set, `psql` on the PATH); it creates and drops a throwaway `rls_check_e2e` database.
+
+## Reporting security issues
+
+Do not report security problems in public issues. See [SECURITY.md](SECURITY.md).

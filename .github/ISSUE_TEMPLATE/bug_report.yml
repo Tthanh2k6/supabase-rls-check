@@ -1,0 +1,83 @@
+name: Bug report
+description: Something does not work as the README says.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Never paste an API key, a JWT, a database URL or real table data. Replace them with `[REDACTED]` before you submit.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `supabase-rls-check --version`.
+    validations:
+      required: true
+  - type: dropdown
+    id: command
+    attributes:
+      label: Command
+      options:
+        - sql
+        - probe
+        - report
+        - scan-env
+        - diff
+        - explain
+        - mcp
+        - GitHub Action
+        - Other (say which below)
+    validations:
+      required: true
+  - type: dropdown
+    id: input_type
+    attributes:
+      label: Input
+      options:
+        - CSV export of check.sql
+        - JSON export of check.sql
+        - probe
+        - scan-env
+        - Not applicable
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: Windows 11
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      description: Output of `python --version`.
+      placeholder: Python 3.12.x
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Full command line and steps
+      description: Hide keys and project URLs. A small CSV or JSON that reproduces the problem helps most.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Redacted output
+      description: Terminal output or the relevant part of the report. Check it for keys and row values first.
+      render: text
