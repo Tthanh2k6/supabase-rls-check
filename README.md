@@ -2,47 +2,55 @@
 
 <!-- mcp-name: io.github.Tthanh2k6/supabase-rls-check -->
 
-[![PyPI](https://img.shields.io/pypi/v/supabase-rls-check)](https://pypi.org/project/supabase-rls-check/) [![Glama MCP server](https://glama.ai/mcp/servers/Tthanh2k6/supabase-rls-check/badges/score.svg)](https://glama.ai/mcp/servers/Tthanh2k6/supabase-rls-check) [![Supabase RLS Check MCP on mcprush](https://mcprush.com/badge/supabase-rls-check-mcp/score.svg)](https://mcprush.com/to/supabase-rls-check-mcp?ref=badge)
+[![PyPI](https://img.shields.io/pypi/v/supabase-rls-check)](https://pypi.org/project/supabase-rls-check/)
 
-Consent-gated, read-only configuration and anonymous-exposure checks for Supabase projects (PostgreSQL 15+, Python 3.11+). No database password or `service_role` key required.
+A command-line tool that reads PostgreSQL catalog metadata from a Supabase project and flags Row Level Security (RLS) mistakes: tables without RLS, `USING (true)` policies, `SECURITY DEFINER` functions callable by `anon`, public Storage buckets and 13 other patterns. It also scans a local app folder for leaked `service_role` keys. It never needs a database password or a `service_role` key, and it never reads table rows. It also ships as an MCP server and a GitHub Action. Python 3.11+, PostgreSQL 15+.
 
-## Why this exists
-
-Supabase applications intentionally ship a public `anon` JWT or `sb_publishable_` key inside browser JavaScript bundles so client code can talk directly to PostgREST (`/rest/v1/`) and Storage. Because every visitor can read that key from DevTools, access control depends directly on PostgreSQL Row Level Security (RLS), policy expressions, table/function grants, view options, and Storage bucket visibility—along with never bundling a `service_role` token in frontend code.
-
-During rapid prototyping, AI-assisted schema generation, or manual migrations, it is easy to leave a table in `public` without RLS, keep a temporary `USING (true)` policy, or forget that PostgreSQL grants `EXECUTE` to `PUBLIC` on new `SECURITY DEFINER` functions exposed at `/rest/v1/rpc/*`. `supabase-rls-check` helps project owners review those patterns safely without modifying data or saving table rows.
-
-## Installation
-
-Requires Python 3.11 or newer.
+It is for people who ship a Supabase app with the `anon` key in the browser and want to check what that key can reach. It is a review aid, not a penetration test (see Limitations).
 
 ```bash
 pipx install supabase-rls-check      # or: uvx supabase-rls-check --help
+supabase-rls-check report --from demo/todo_ai.csv --out-dir demo --project "todo-ai (fictional demo)" --i-own-this-project
 ```
 
-Optional Model Context Protocol (MCP) server support (`mcp>=1.10`):
+The second command runs on the fictional dataset in [`demo/todo_ai.csv`](demo/todo_ai.csv):
+
+```
+rule,schema_name,object_name,policy_name
+rls_disabled,public,todos,
+policy_true,public,profiles,read_every_profile
+public_bucket,storage,todo-attachments,
+```
+
+It writes [`demo/report.md`](demo/report.md), `demo/report.html` and [`demo/fix.sql`](demo/fix.sql). The Markdown report contains this table:
+
+| Severity | Finding / object | Evidence |
+| --- | --- | --- |
+| High | Unconditional policy expression: public.profiles | policy_true: read_every_profile |
+| High | Row security is disabled: public.todos | rls_disabled |
+| Medium | Storage bucket is public: storage.todo-attachments | public_bucket |
+
+`fix.sql` is a review template that starts with `BEGIN;` and ends with `ROLLBACK;`. It enables RLS on `profiles` and `todos` and leaves a commented example policy for you to adapt.
+
+![Sample HTML report preview](docs/demo-report.png)
+
+## Install
 
 ```bash
-pipx install "supabase-rls-check[mcp]"
+pipx install supabase-rls-check
+pipx install "supabase-rls-check[mcp]"   # adds the MCP server (mcp>=1.10)
+pip install -e ".[dev]"                  # from a source checkout
 ```
 
-From source for development:
-
-```bash
-pip install -e ".[dev]"
-```
-
-## Three-step usage
+## Usage
 
 ### 1. Export catalog metadata with `check.sql`
-
-Print the bundled read-only SQL query (or open [`src/supabase_rls_check/sql/check.sql`](src/supabase_rls_check/sql/check.sql)):
 
 ```bash
 supabase-rls-check sql --print-sql > check.sql
 ```
 
-Paste `check.sql` into the **Supabase SQL Editor**, adjust the sensitive-table name pattern if needed, run the `SELECT`, and export the single result set as CSV or JSON (`rule,schema_name,object_name,policy_name,basis`). Only catalog metadata is queried—never application rows.
+Paste `check.sql` into the Supabase SQL Editor, adjust the sensitive-table name pattern if needed, run it, and export the single result set as CSV or JSON (columns `rule,schema_name,object_name,policy_name,basis`). The query reads catalogs only, never application rows. The query file is also at [`src/supabase_rls_check/sql/check.sql`](src/supabase_rls_check/sql/check.sql).
 
 Validate and normalize the export:
 
@@ -50,9 +58,9 @@ Validate and normalize the export:
 supabase-rls-check sql --from export.csv --out sql_results.json --i-own-this-project
 ```
 
-### 2. Optionally verify anonymous read exposure (`probe`)
+### 2. Optional: check anonymous read access with `probe`
 
-Check what an unauthenticated caller can actually read with your public `anon` JWT or `sb_publishable_` key, and optionally inspect your frontend origin for leaked `service_role` JWTs:
+`probe` asks your project, with the public key only, which tables an unauthenticated visitor can read. With `--site` it also looks for a `service_role` JWT in your frontend.
 
 ```bash
 supabase-rls-check probe \
@@ -63,11 +71,14 @@ supabase-rls-check probe \
   --i-own-this-project
 ```
 
-- Pass the project HTTPS origin to `--url` (not `/rest/v1/`).
-- Only `anon` JWTs and `sb_publishable_` keys are accepted; `service_role` and `authenticated` tokens are rejected before any request is sent.
-- If OpenAPI schema discovery is disabled on PostgREST, pass known table/view names explicitly with `--tables todos profiles`.
+- Pass the project origin to `--url`, not `/rest/v1/`.
+- Only `anon` JWTs and `sb_publishable_` keys are accepted. `service_role` and `authenticated` tokens are rejected before any request is sent.
+- If OpenAPI discovery is off on PostgREST, name the tables yourself with `--tables todos profiles`.
+- Set `SUPABASE_ANON_KEY` instead of `--anon-key` to keep the key out of shell history.
 
-### 3. Generate the standalone report and dry-run SQL template
+It adds two findings: `anon_readable` (High; column names and visible row count only) and `service_role_exposed` (Critical; a JWT with `role = "service_role"` found in the page HTML or a same-origin script).
+
+### 3. Build the report
 
 ```bash
 supabase-rls-check report \
@@ -77,54 +88,60 @@ supabase-rls-check report \
   --i-own-this-project
 ```
 
-This writes three files to `review_out/`:
+Output in `review_out/`:
 
-- `report.html` — standalone, offline-ready HTML report (A4 landscape print stylesheet for **Print -> Save as PDF**)
-- `report.md` — Markdown summary suitable for issues or pull requests
-- `fix.sql` — commented review template wrapped in `BEGIN; ... ROLLBACK;` (never executed by this tool; replace `user_id` with your real ownership column and test on staging first)
+- `report.html`: standalone, works offline, A4 landscape print stylesheet for Save as PDF.
+- `report.md`: summary for issues or pull requests.
+- `fix.sql`: commented review template wrapped in `BEGIN; ... ROLLBACK;`. The tool never runs it. Replace `user_id` with your ownership column and test on staging first.
 
-Add `--lang vi` to generate Vietnamese report text.
+Add `--lang vi` for Vietnamese text. A Vietnamese demo is in [`demo/vi/report.md`](demo/vi/report.md).
 
-### Scan your app for secrets in public env variables
+### Scan your app folder for leaked secrets
 
-Scan a local project directory (read-only, local files only, no network) for `service_role` JWTs, `sb_secret_` keys, and live API secrets exposed through client-bundled environment variables (`EXPO_PUBLIC_`, `NEXT_PUBLIC_`, `VITE_`, `REACT_APP_`, `PUBLIC_`, `NUXT_PUBLIC_`) or hardcoded in client source files:
+`scan-env` reads local files only, needs no network and no consent flag, and masks every secret it prints (first 6 characters, then `…`, then last 4).
 
 ```bash
 supabase-rls-check scan-env . --out envscan.json
-supabase-rls-check report \
-  --from sql_results.json envscan.json \
-  --out-dir review_out \
-  --project "My Supabase App" \
-  --i-own-this-project
+supabase-rls-check report --from sql_results.json envscan.json --out-dir review_out --project "My Supabase App" --i-own-this-project
 ```
 
-- Inspects `.env`, `.env.*`, `app.json`, `app.config.*`, `eas.json`, AI coding agent and MCP configuration files (`.claude/settings.json`, `.claude/settings.local.json`, `.cursor/mcp.json`, `.mcp.json`, `.vscode/mcp.json`), and client source files (`*.js`, `*.jsx`, `*.ts`, `*.tsx`, `*.mjs`, `*.cjs`, `*.vue`, `*.svelte`) anywhere in the tree, which covers common React Native / Expo layouts such as `src/`, `app/`, `components/`, and `screens/`. It skips `node_modules`, `.git`, virtualenvs, build outputs (`dist`, `build`, `web-build`, `android/app/build`, `ios/build`, `ios/Pods`), binary files, and files over 2 MB.
-- Emits `public_env_service_role` (**Critical**), `public_env_secret_key` (**High**), `service_role_in_client_code` and `db_url_in_client_code` (**Critical**; both look for `service_role` JWTs, `sb_secret_` keys, and Postgres URLs with a password in client-bundled files, excluding `supabase/functions/`, `server/`, `api/`, `scripts/`, and `backend/`), and `agent_config_secret` (**Critical**, reporting file path and JSON key path when valid JSON, or falling back to text search on invalid JSON, for `sb_secret_` keys, `service_role` JWTs, and `postgres(ql)?://user:password@` URLs).
-- The `anon` JWT and `sb_publishable_` keys are expected in a client app and are never reported. The scan is pattern-based on single lines: obfuscated, split, concatenated, or encoded keys can be missed.
-- Requires no consent flag because it only reads local files, and always masks secret values (`first 6 chars + … + last 4`).
+It reads `.env`, `.env.*`, `app.json`, `app.config.*`, `eas.json`, AI agent and MCP config files (`.claude/settings.json`, `.claude/settings.local.json`, `.cursor/mcp.json`, `.mcp.json`, `.vscode/mcp.json`) and client source files (`*.js`, `*.jsx`, `*.ts`, `*.tsx`, `*.mjs`, `*.cjs`, `*.vue`, `*.svelte`). It skips `node_modules`, `.git`, virtualenvs, build output (`dist`, `build`, `web-build`, `android/app/build`, `ios/build`, `ios/Pods`), binary files and files over 2 MB.
 
-### Explaining a rule and optional MCP mode
+It reports:
 
-Inspect the rationale, caveats, and remediation example for any rule without touching a target project:
+- `public_env_service_role` (Critical) and `public_env_secret_key` (High): secrets in variables that get bundled into the client (`EXPO_PUBLIC_`, `NEXT_PUBLIC_`, `VITE_`, `REACT_APP_`, `PUBLIC_`, `NUXT_PUBLIC_`).
+- `service_role_in_client_code` and `db_url_in_client_code` (both Critical): `service_role` JWTs, `sb_secret_` keys or Postgres URLs with a password in client files. `supabase/functions/`, `server/`, `api/`, `scripts/` and `backend/` are excluded.
+- `agent_config_secret` (Critical): the same secrets in agent or MCP config files, reported with the file path and, for valid JSON, the key path.
+
+The `anon` JWT and `sb_publishable_` keys belong in a client app and are never reported. Matching is line by line, so obfuscated, split or encoded keys can be missed.
+
+### Explain a rule, run the MCP server
 
 ```bash
 supabase-rls-check explain rls_disabled
 supabase-rls-check explain definer_anon_exec
+supabase-rls-check mcp        # needs the [mcp] extra; stdio transport
 ```
 
-If installed with `supabase-rls-check[mcp]`, start the local stdio MCP server:
+The MCP server has four local, read-only tools: `analyze_sql_export(path)`, `explain_rule(rule)`, `scan_public_env(path)` and `diff_results(old_path, new_path)`. `probe` is not exposed, so an AI client never handles your API key or makes HTTP requests through this tool.
+
+### Compare two runs with `diff`
 
 ```bash
-supabase-rls-check mcp
+supabase-rls-check diff \
+  --old baseline_results.json \
+  --new sql_results.json \
+  --out diff.json \
+  --fail-on-new high
 ```
 
-The MCP server exposes only four local, read-only tools: `analyze_sql_export(path)`, `explain_rule(rule)`, `scan_public_env(path)`, and `diff_results(old_path, new_path)`. Network probing is intentionally excluded from MCP so AI clients never handle API keys or send HTTP requests through this tool.
+`diff` lists findings that are new or resolved between two local CSV or JSON files. With `--fail-on-new` (`critical`, `high`, `medium` or `low`) it exits `1` when a new finding at or above that severity appears. A finding is keyed by `(rule, schema_name, object_name, policy_name, basis)`. `basis` says why a heuristic rule fired, for example `table name matches pattern 'payment'` or `table comment tag 'pii'`. Adding a `pii` comment to a table therefore shows up as a new finding, and the earlier pattern-based one as resolved. JSON files without a `basis` key still load, with `basis` set to `""`.
 
-## Run it in CI (GitHub Action)
+One consequence: a baseline exported before 0.6.1 lists an extension-owned table with an empty `basis`. The first diff against it reports that table as new (with `owned by extension <name>`) and the old entry as resolved, so `--fail-on-new high` exits `1` once. Export the baseline again with 0.6.1 or later to clear it.
 
-The repository is also a composite GitHub Action. It runs the same read-only `check.sql` with `psql` (inside a `default_transaction_read_only` session), writes `report.md`, `report.html` and `fix.sql`, adds a summary table to the job page, and fails the job when a finding is at or above `fail-on`.
+## GitHub Action
 
-Unlike the three-step flow above, this needs a Postgres connection string. Keep it in a repository secret and point it at a staging project or a read-only role.
+The repository is a composite action. It runs `check.sql` with `psql` inside a `default_transaction_read_only` session, writes `report.md`, `report.html` and `fix.sql`, adds a summary table to the job page, and fails the job when a finding is at or above `fail-on`. Unlike the flow above, it needs a Postgres connection string. Store it as a repository secret and point it at staging or a read-only role. The action refuses to run unless `i-own-this-project` is `"true"`. Outputs: `findings` (total) and `failing` (at or above `fail-on`).
 
 ```yaml
 name: RLS check
@@ -145,23 +162,7 @@ jobs:
           path: rls-report/
 ```
 
-Outputs: `findings` (total) and `failing` (at or above `fail-on`). The action refuses to run unless `i-own-this-project` is `"true"`.
-
-## Catch drift between runs
-
-Compare two local CSV or JSON result files (read-only, local files only, no network) to see what is **new** and what was **resolved** between runs, and optionally exit with code `1` only when a new finding appears at or above `--fail-on-new` (`critical`, `high`, `medium`, or `low`):
-
-```bash
-supabase-rls-check diff \
-  --old baseline_results.json \
-  --new sql_results.json \
-  --out diff.json \
-  --fail-on-new high
-```
-
-Each finding is keyed by `(rule, schema_name, object_name, policy_name, basis)`, where `basis` explains why a heuristic rule fired (for example `"table name matches pattern 'payment'"` vs `"table comment tag 'pii'"` on `sensitive_anon_policy`, the column name on `secret_column_exposed`, or the argument name(s) on `definer_trusts_id_arg`). Adding a `pii` table comment between runs therefore shows up as a **new** finding (and the previous pattern-based finding on that policy, if any, as **resolved**) rather than a separate "changed" bucket. Older JSON files without a `basis` key remain compatible and default to `""`. The same applies when `basis` changes for a table: a baseline exported before 0.6.1 lists an extension-owned table with an empty `basis`, so the first diff against it shows that table as **new** (with `owned by extension <name>`) and the old entry as **resolved**, and `--fail-on-new high` exits `1` once. Re-export the baseline with 0.6.1 to avoid this.
-
-Run `check.sql` on a schedule and on pull requests against your baseline (for example `.rls-baseline.json` committed in the repository or downloaded from the previous workflow artifact) so schema drift outside a pull request triggers an alert:
+To catch schema drift outside pull requests, run `check.sql` on a schedule and diff it against a baseline, for example `.rls-baseline.json` committed to the repository:
 
 ```yaml
 name: RLS drift check
@@ -200,89 +201,66 @@ jobs:
             diff.json
 ```
 
-## Sample report and offline demo
+## Rules
 
-![Sample HTML report preview](docs/demo-report.png)
+`check.sql` has 17 rules. It queries PostgreSQL 15+ system catalogs and `storage.buckets` in one read-only query. The table also lists two `scan-env` rules that read local files.
 
-Try the offline fictional dataset ([`demo/todo_ai.csv`](demo/todo_ai.csv) -> [`demo/report.md`](demo/report.md) and [`demo/fix.sql`](demo/fix.sql)):
-
-```bash
-supabase-rls-check report --from demo/todo_ai.csv --out-dir demo --project "todo-ai (fictional demo)" --i-own-this-project
-supabase-rls-check report --from demo/todo_ai.csv --out-dir demo/vi --project "todo-ai (dữ liệu giả)" --lang vi --i-own-this-project
-```
-
-## Seventeen checks: SQL catalog rules
-
-`check.sql` inspects PostgreSQL 15+ system catalogs and `storage.buckets` in a single read-only CTE query (and `scan-env` adds local file checks):
-
-| Rule ID | Severity | Meaning |
+| Rule ID | Severity | What it flags |
 | --- | --- | --- |
-| `rls_disabled` | High | Table or partitioned table in `public` has Row Level Security disabled (`relrowsecurity = false`). When the table belongs to an extension (for example PostGIS `spatial_ref_sys`), the exposure is still reported but `basis` reads `owned by extension <name>`, and `fix.sql` carries a comment recommending moving the extension out of `public` into an `extensions` schema instead of `ENABLE ROW LEVEL SECURITY`, which fails on Supabase with "must be owner" (see [supabase/supabase discussion #52767](https://github.com/supabase/supabase/discussions/52767)). Detection reads `pg_depend` (`deptype = 'e'`) and only covers tables that are direct members of an extension; some extensions are not relocatable, so check before moving one. |
-| `policy_true` | High | Policy in `public` has an unconditional `USING (true)` or `WITH CHECK (true)` expression. |
-| `policy_true_writable` | Critical | Permissive `UPDATE`, `DELETE`, or `ALL` policy in `public` for `anon`, `authenticated`, or `public` has an unconditional `USING (true)` expression on a table where `anon` or `authenticated` holds `UPDATE` or `DELETE` privileges, allowing anyone with that role to modify or delete every row. |
-| `sensitive_anon_policy` | High | Policy granted to `anon` or `public` on a table matching common sensitive names (`user`, `profile`, `order`, `payment`, `invoice`, `customer`, `patient`, `secret`, `token`, `document`) or tagged with a `pii` table comment (`basis` records the matched pattern or `'pii'` comment tag). |
-| `definer_anon_exec` | High | Non-trigger `SECURITY DEFINER` function in `public` is executable by `anon` (callable via `/rest/v1/rpc/*`). |
-| `definer_search_path` | High | `SECURITY DEFINER` function in `public` has no fixed `search_path` set on the function definition. |
-| `view_not_invoker` | High | View in `public` does not enable `security_invoker`, so base-table queries run with view-owner privileges. |
-| `public_bucket` | Medium | Supabase Storage bucket in `storage.buckets` is marked `public = true`. |
-| `public_bucket_listable` | Medium | Public Storage bucket in `storage.buckets` also has an `anon` or `public` `SELECT` (or `ALL`) policy on `storage.objects` matching that bucket id or `true`, letting anyone list every file name in the bucket through the API. |
-| `public_extension` | Low | PostgreSQL extension is installed directly in `public` rather than a dedicated `extensions` schema. |
-| `policy_user_metadata` | High | Policy in `public` reads user-editable `user_metadata` from `auth.jwt()` or `request.jwt.claims`. Use server-managed `app_metadata` or a protected authorization table. |
-| `policy_auth_per_row` | Low | Policy on an RLS-enabled table in `public` calls `auth.uid()`, `auth.jwt()`, `auth.role()`, or `current_setting()` without a sub-select. Performance finding: use `(select auth.uid())` for row-independent calls. |
-| `auth_users_exposed` | Critical | Public view directly depends on `auth.users`, allows `anon` or `authenticated` to SELECT, and is materialized or lacks `security_invoker`. Drop it or harden a regular view and revoke access; publish only needed profile columns from a separate table. |
-| `matview_api_exposed` | High | Materialized view or foreign table in `public` allows `anon` or `authenticated` to `SELECT`. Row Level Security does not apply to materialized views, so every row is readable through the Data API. Revoke `SELECT` from `anon`/`authenticated` and serve the data through a regular view with `security_invoker = true`, or move it to a schema the API does not expose. |
-| `policy_any_authenticated` | Medium | Policy in `public` only checks that the caller is signed in (`auth.role() = 'authenticated'` or `auth.uid() IS NOT NULL`), giving every signed-in account the same access. Tie the row to `(select auth.uid()) = user_id` or a membership table, or document intentional shared access in a table comment. |
-| `secret_column_exposed` | Medium | Table in `public` has a column matching or ending with `api_key`, `apikey`, `secret`, `client_secret`, `access_token`, `refresh_token`, `private_key`, or `password` (`basis` = column name) where `anon` or `authenticated` holds table or column `SELECT`. RLS can limit rows to the owner, but the client still receives the plaintext secret; move secrets to Supabase Vault, a private schema, or a server-only Edge Function, or `REVOKE SELECT (col) ON public.t FROM anon, authenticated`. |
-| `definer_trusts_id_arg` | Medium | `SECURITY DEFINER` function in `public` executable by `anon` or `authenticated` takes an argument ending with `_id` or equal to `uid`, `user`, `org`, or `tenant` (`basis` = argument name(s)) and its `prosrc` does not reference `auth.uid()` or `auth.jwt()`. Review needed: misses functions that delegate caller checks to a helper function and may flag functions that validate the ID against a membership table. |
-| `db_url_in_client_code` | Critical | Local `scan-env` check: a `postgres(ql)?://user:password@` connection string in a client-bundled file (React Native / Expo source, `app.json`, `app.config.*`, `eas.json`). Placeholders such as `${DB_PASSWORD}` are ignored. |
-| `agent_config_secret` | Critical | Local `scan-env` check: AI coding agent or MCP config file (`.claude/settings.json`, `.claude/settings.local.json`, `.cursor/mcp.json`, `.mcp.json`, `.vscode/mcp.json`) contains an `sb_secret_` key, a `service_role` JWT, or a `postgres(ql)?://user:password@` connection string. |
+| `rls_disabled` | High | Table or partitioned table in `public` with RLS off. If an extension owns the table (for example PostGIS `spatial_ref_sys`), it is still reported with `basis` = `owned by extension <name>`, and `fix.sql` suggests moving the extension to an `extensions` schema, because `ENABLE ROW LEVEL SECURITY` fails there with "must be owner" (see [supabase/supabase discussion #52767](https://github.com/supabase/supabase/discussions/52767)). Detection uses `pg_depend` (`deptype = 'e'`) and covers direct extension members only. Some extensions cannot be relocated, so check first. |
+| `policy_true` | High | Policy in `public` with `USING (true)` or `WITH CHECK (true)`. |
+| `policy_true_writable` | Critical | Permissive `UPDATE`, `DELETE` or `ALL` policy for `anon`, `authenticated` or `public` with `USING (true)`, on a table where `anon` or `authenticated` holds `UPDATE` or `DELETE`. Anyone with that role can change or delete every row. |
+| `sensitive_anon_policy` | High | Policy granted to `anon` or `public` on a table whose name matches `user`, `profile`, `order`, `payment`, `invoice`, `customer`, `patient`, `secret`, `token` or `document`, or that has a `pii` table comment. `basis` records which one matched. |
+| `definer_anon_exec` | High | Non-trigger `SECURITY DEFINER` function in `public` that `anon` can execute (callable at `/rest/v1/rpc/*`). |
+| `definer_search_path` | High | `SECURITY DEFINER` function in `public` with no fixed `search_path`. |
+| `view_not_invoker` | High | View in `public` without `security_invoker`, so it runs with the owner's privileges. |
+| `public_bucket` | Medium | Storage bucket with `public = true`. |
+| `public_bucket_listable` | Medium | Public bucket that also has an `anon` or `public` `SELECT` (or `ALL`) policy on `storage.objects` matching the bucket id or `true`, so anyone can list its file names. |
+| `public_extension` | Low | Extension installed in `public` instead of an `extensions` schema. |
+| `policy_user_metadata` | High | Policy in `public` that reads user-editable `user_metadata` from `auth.jwt()` or `request.jwt.claims`. Use `app_metadata` or an authorization table. |
+| `policy_auth_per_row` | Low | Policy on an RLS-enabled table that calls `auth.uid()`, `auth.jwt()`, `auth.role()` or `current_setting()` without a sub-select. This is a performance finding: write `(select auth.uid())`. |
+| `auth_users_exposed` | Critical | View in `public` that depends directly on `auth.users`, lets `anon` or `authenticated` `SELECT`, and is materialized or lacks `security_invoker`. |
+| `matview_api_exposed` | High | Materialized view or foreign table in `public` that `anon` or `authenticated` can `SELECT`. RLS does not apply to materialized views, so every row is readable through the Data API. |
+| `policy_any_authenticated` | Medium | Policy that only checks the caller is signed in (`auth.role() = 'authenticated'` or `auth.uid() IS NOT NULL`), so every account gets the same access. |
+| `secret_column_exposed` | Medium | Column in `public` named or ending in `api_key`, `apikey`, `secret`, `client_secret`, `access_token`, `refresh_token`, `private_key` or `password` that `anon` or `authenticated` can `SELECT` (`basis` = column name). RLS limits rows, but the client still receives the plaintext value. |
+| `definer_trusts_id_arg` | Medium | `SECURITY DEFINER` function in `public`, executable by `anon` or `authenticated`, with an argument ending in `_id` or equal to `uid`, `user`, `org` or `tenant`, whose source never references `auth.uid()` or `auth.jwt()` (`basis` = argument names). Needs review: it misses functions that delegate the check to a helper and may flag ones that validate the ID against a membership table. |
+| `db_url_in_client_code` | Critical | `scan-env`: a `postgres(ql)://user:password@` URL in a client-bundled file. Placeholders such as `${DB_PASSWORD}` are ignored. |
+| `agent_config_secret` | Critical | `scan-env`: an `sb_secret_` key, `service_role` JWT or Postgres URL with a password in an agent or MCP config file. |
 
-The nine newer catalog rules (`policy_true_writable`, `policy_user_metadata`, `policy_auth_per_row`, `auth_users_exposed`, `matview_api_exposed`, `public_bucket_listable`, `policy_any_authenticated`, `secret_column_exposed`, and `definer_trusts_id_arg`) add only commented guidance to `fix.sql`; they never generate automatic DDL. You can also tag tables with `COMMENT ON TABLE public.x IS 'pii'` so `sensitive_anon_policy` does not depend on table naming (idea from a reader comment on the dev.to article). Overlap is intentional: `policy_true` keeps firing for the same policy as `policy_true_writable`, a materialized view over `auth.users` produces both `auth_users_exposed` and `matview_api_exposed` (same as regular views over `auth.users` overlap with `view_not_invoker`), and listable public buckets produce both `public_bucket` and `public_bucket_listable`. Policy expression checks are heuristics over PostgreSQL's deparsed SQL. The authentication performance check recognizes directly SELECT-wrapped calls; complex subqueries need manual review. The Auth exposure check follows direct dependencies and returns no findings when `auth.users` is absent.
+`policy_true_writable`, `policy_user_metadata`, `policy_auth_per_row`, `auth_users_exposed`, `matview_api_exposed`, `public_bucket_listable`, `policy_any_authenticated`, `secret_column_exposed` and `definer_trusts_id_arg` add only commented guidance to `fix.sql`, never DDL. To make `sensitive_anon_policy` independent of table names, tag tables with `COMMENT ON TABLE public.x IS 'pii'`.
 
-### Additional checks from `probe`
+Some rules overlap on purpose. `policy_true` fires on the same policy as `policy_true_writable`. A materialized view over `auth.users` produces both `auth_users_exposed` and `matview_api_exposed`. A regular view over `auth.users` can also trigger `view_not_invoker`. A listable public bucket produces both `public_bucket` and `public_bucket_listable`.
 
-When `probe` is run, two runtime checks complement the SQL catalog export:
-
-- `anon_readable` (**High**) — PostgREST returned visible rows for an unauthenticated `GET`/`HEAD` request using the `anon` or publishable key (records column names and visible row count only).
-- `service_role_exposed` (**Critical**) — A JWT whose payload decodes to `role = "service_role"` was found in frontend HTML or a directly linked same-origin script.
-
-Tip: pass the anon key through the `SUPABASE_ANON_KEY` environment variable instead of `--anon-key` to keep it out of shell history.
+Policy checks are heuristics over PostgreSQL's deparsed SQL. The per-row auth check only recognizes calls wrapped directly in a `SELECT`; complex subqueries need manual review. The `auth.users` check follows direct dependencies and returns nothing when `auth.users` does not exist.
 
 ## How it is tested
 
-- **Unit tests** (`pytest`): consent flag enforcement, GET/HEAD-only probing with no redirects, response size limits, row values and keys never written to disk, `service_role` JWT detection, local `scan-env` secret detection (including agent/MCP config files and React Native / Expo sources and config) with masked values, `diff` drift comparison with `basis` failure-injection and severity gating, HTML/SQL escaping in reports, identifier quoting in `fix.sql`, English and Vietnamese output, all 17 catalog rules in reports/explanations, comment-only fixes for the newer rules, and the MCP tool surface (no `probe` exposed).
-- **Catalog query on a real PostgreSQL 15** (GitHub Actions): `tests/fixtures/seed_pg.sql` plants issues for all 17 rules next to safe controls. CI compares all 32 expected findings (including `basis` values) exactly, including overlapping view/matview, writable `USING (true)` policy, and bucket findings, and rejects extra or missing rows. Cases cover both JWT sources, all four authentication helpers, mixed wrapped/unwrapped calls, signed-in-only policies, writable vs read-only `USING (true)` policies, materialized views, public bucket listing policies, `pii` table comments, an extension-owned table (via `ALTER EXTENSION ... ADD TABLE`), column-level `SELECT` revocations on secret columns, `SECURITY DEFINER` ID-argument checks, role grants, and safe `app_metadata`/sub-select/invoker controls. The query runs with read-only transactions, including separate cases without an `auth` schema or `auth.users` table.
-- **`diff` end to end on a real PostgreSQL 15** (GitHub Actions job `diff-e2e`, also runnable locally with `scripts/e2e_diff.py` when `psql` is available): applies a small fixture schema, exports and builds a JSON report, reruns with nothing changed (`diff --fail-on-new high` exits `0`), adds `COMMENT ON TABLE ... IS 'pii'`, reruns, and asserts that `diff --fail-on-new high` exits non-zero with the escalated `sensitive_anon_policy` finding.
-- **Abuse cases checked by hand**: running any command without `--i-own-this-project` exits before touching the network; passing a `service_role` key to `probe` is refused; the MCP server cannot reach the network.
+- `pytest` runs 133 tests offline (`python -m pytest -q`; an autouse fixture blocks real network requests). They cover consent-flag enforcement, GET/HEAD-only probing without redirects, response size limits, row values and keys never written to disk, `service_role` JWT detection, `scan-env` (agent/MCP config, React Native and Expo files, masked output), `diff` including `basis` changes and severity gating, HTML and SQL escaping, identifier quoting in `fix.sql`, English and Vietnamese output, all 17 catalog rules, and the MCP tool list (no `probe`).
+- GitHub Actions runs `check.sql` on a real PostgreSQL 15. `tests/fixtures/seed_pg.sql` plants issues for all 17 rules next to safe controls, and CI compares the 32 expected findings (with `basis`) exactly, failing on any extra or missing row. The fixture includes both JWT sources, extension-owned tables, column-level `REVOKE`s and `pii` comments, and CI also runs the query without an `auth` schema or `auth.users` table.
+- A second CI job, `diff-e2e` (also runnable as `scripts/e2e_diff.py` with `psql` available), applies a small schema, builds a report, reruns unchanged (`diff --fail-on-new high` exits `0`), adds `COMMENT ON TABLE ... IS 'pii'`, reruns, and checks that the same command now exits non-zero on `sensitive_anon_policy`.
 
-## Ethical boundaries
+## Safety rules
 
-- **Authorization required**: Only scan projects you own or have explicit **written authorization** to test, including any `--site` frontend domain. Commands that process project exports or targets require `--i-own-this-project` or `--have-written-consent`.
-- **Strictly read-only**: `probe` sends `GET` and `HEAD` requests only—never `POST`, `PUT`, `PATCH`, `DELETE`, or RPC invocations. HTTP redirects are not followed, `trust_env` is disabled, responses are capped at 5 MB, and timeouts are fixed at 20 seconds.
-- **No customer row storage**: `probe` requests at most `limit=1` row per relation in memory, extracts column names, discards row values immediately, and strips JWT patterns (`[REDACTED]`) from metadata and error messages.
+- Use it only on projects you own or have written permission to test, including any `--site` domain. Commands that process project exports or targets need `--i-own-this-project` or `--have-written-consent`, and exit before touching the network without one.
+- `probe` sends `GET` and `HEAD` only. It does not follow redirects, sets `trust_env` to false, caps responses at 5 MB and uses a 20 second timeout.
+- `probe` asks for at most `limit=1` row per relation, keeps it in memory, extracts column names, discards the values and replaces JWT patterns with `[REDACTED]` in metadata and error messages.
 
-## Limitations (not a penetration test)
+## Limitations
 
-This tool is a configuration and anonymous-read review aid, **not a penetration test** and **not a security certification**:
+This is a configuration and anonymous-read review aid. It is not a penetration test or a security certification.
 
-- Configuration findings are review signals, not proof of exploitability; public buckets or anonymous `SELECT` policies are sometimes intentional.
-- An empty finding list, HTTP `200 []`, or `401`/`403` on a single request does not prove overall safety.
-- Does **not** test authenticated cross-user / multi-tenant isolation, `INSERT`/`UPDATE`/`DELETE` permissions, SQL function bodies, Edge Functions, custom Auth hooks, or complex `storage.objects` policy combinations.
-- `--site` inspects only the entry HTML document and up to 20 directly linked same-origin HTTPS `<script src>` files. Dynamically imported chunks, source maps, split/obfuscated tokens, and non-JWT secret formats (`sb_secret_*`) are outside its coverage, and JWT signatures are not verified.
-- `fix.sql` is a starting template ending in `ROLLBACK;`. Adding a new permissive policy does not override existing broad permissive policies—always export existing policies/grants and test two-user isolation on staging before committing changes.
+- Findings are review signals. A public bucket or an anonymous `SELECT` policy is sometimes intended.
+- An empty result, an HTTP `200 []` or a `401`/`403` on one request does not show the project is safe.
+- It does not test cross-user isolation between authenticated users, `INSERT`/`UPDATE`/`DELETE` permissions, function bodies, Edge Functions, custom Auth hooks or complex `storage.objects` policy combinations.
+- `--site` reads the entry HTML and up to 20 directly linked same-origin HTTPS `<script src>` files. Dynamically imported chunks, source maps, split or obfuscated tokens and `sb_secret_*` keys are outside its reach, and JWT signatures are not verified.
+- `fix.sql` is a starting template ending in `ROLLBACK;`. A new permissive policy does not override existing broad ones. Export the current policies and grants, and test with two users on staging before committing changes.
 
-## Use it from an AI coding agent
+## Related
 
-- **Agent skill** (Claude Code, Cursor, Codex and other SKILL.md agents): [Supabase RLS Review on Agensi](https://www.agensi.io/skills/supabase-rls-review) walks the agent through the review, policy fixes and a two-user isolation test on staging.
-- **MCP server listing**: [supabase-rls-check on Glama](https://glama.ai/mcp/servers/Tthanh2k6/supabase-rls-check).
-
-## Need a human review?
-
-Need a manual review of RLS policies, `SECURITY DEFINER` function bodies, and two-user staging isolation? Book a fixed-scope review (from $69, report plus a ROLLBACK-wrapped fix script):
-
-- Upwork: https://www.upwork.com/services/product/2119987807643160130
-- Contra: https://contra.com/s/sFUXWqOZ-supabase-security-check-for-lovable-bolt-and-v0-apps
+- Agent skill for Claude Code, Cursor, Codex and other SKILL.md agents: [Supabase RLS Review on Agensi](https://www.agensi.io/skills/supabase-rls-review). It walks the agent through the review, policy fixes and a two-user isolation test on staging.
+- MCP listings: [Glama](https://glama.ai/mcp/servers/Tthanh2k6/supabase-rls-check) and [mcprush](https://mcprush.com/to/supabase-rls-check-mcp?ref=badge).
+- Paid manual review of RLS policies, `SECURITY DEFINER` bodies and two-user isolation on staging, from $69 (report plus a ROLLBACK-wrapped fix script): [Upwork](https://www.upwork.com/services/product/2119987807643160130), [Contra](https://contra.com/s/sFUXWqOZ-supabase-security-check-for-lovable-bolt-and-v0-apps).
 
 ## License
 
-Code is released under the [MIT License](LICENSE) (Copyright (c) 2026 Trung Thanh Tran). Bundled Bricolage Grotesque report fonts in `assets/` are licensed under the SIL Open Font License 1.1 ([`assets/BricolageGrotesque-OFL.txt`](assets/BricolageGrotesque-OFL.txt)).
+Code: [MIT License](LICENSE), Copyright (c) 2026 Trung Thanh Tran. The Bricolage Grotesque report fonts in `assets/` are under the SIL Open Font License 1.1 ([`assets/BricolageGrotesque-OFL.txt`](assets/BricolageGrotesque-OFL.txt)).

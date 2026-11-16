@@ -31,3 +31,6 @@ probe_results.json
 # OS / editor files
 .DS_Store
 Thumbs.db
+
+# Internal planning notes (Vietnamese), not part of the package
+YEU_CAU_*.md

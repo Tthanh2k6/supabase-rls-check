@@ -4,12 +4,12 @@ Contributions that improve rule accuracy, documentation clarity, or report usabi
 
 ## Safety and scope boundaries
 
-Pull requests **must** preserve the project's safety invariants:
+Pull requests must preserve the project's safety invariants:
 
-1. **Read-only behavior only** — Never add `INSERT`, `UPDATE`, `DELETE`, DDL execution, or RPC (`POST`) calls against target projects. `probe` may use `GET` and `HEAD` only.
-2. **Explicit authorization** — Target-facing CLI commands (`sql --from`, `probe`, `report`) must continue to require `--i-own-this-project` or `--have-written-consent`.
-3. **Zero secret or row retention** — Never persist customer row values, HTTP error bodies, or raw JWT strings in result files, reports, or error output.
-4. **No probing in MCP** — Keep `probe` out of `mcp_server.py`; MCP tools operate strictly on local SQL metadata exports and static rule documentation.
+1. Read-only behavior only: never add `INSERT`, `UPDATE`, `DELETE`, DDL execution, or RPC (`POST`) calls against target projects. `probe` may use `GET` and `HEAD` only.
+2. Explicit authorization: target-facing CLI commands (`sql --from`, `probe`, `report`) must continue to require `--i-own-this-project` or `--have-written-consent`.
+3. Zero secret or row retention: never persist customer row values, HTTP error bodies, or raw JWT strings in result files, reports, or error output.
+4. No probing in MCP: keep `probe` out of `mcp_server.py`; MCP tools operate strictly on local SQL metadata exports and static rule documentation.
 
 ## Development setup
 
