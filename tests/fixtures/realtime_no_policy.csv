@@ -1,0 +1,2 @@
+rule,schema_name,object_name,policy_name,basis
+realtime_messages_no_policy,realtime,messages,,no policy on realtime.messages

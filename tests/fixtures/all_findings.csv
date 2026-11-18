@@ -6,6 +6,9 @@ definer_search_path,public,handle_new_user(),,
 definer_trusts_id_arg,public,get_user_orders(p_user_id uuid),,p_user_id
 matview_api_exposed,public,auth_snapshot,,
 matview_api_exposed,public,sales_rollup,,
+mfa_table_without_aal2,public,billing_settings,,table comment tag 'mfa'
+mfa_table_without_aal2,public,mfa_preferences,,table name matches pattern 'mfa_*'
+mfa_table_without_aal2,public,settings_mfa,,table name matches pattern '*_mfa'
 policy_any_authenticated,public,posts,any_signed_in_role,
 policy_any_authenticated,public,posts,any_signed_in_uid,
 policy_auth_per_row,public,notes,mixed_auth_calls,
@@ -23,6 +26,9 @@ public_bucket,storage,avatars,,
 public_bucket,storage,documents,,
 public_bucket_listable,storage,avatars,public_list_avatars,
 public_extension,public,pg_trgm,,
+realtime_messages_policy_true,realtime,messages,realtime_public_all,realtime_public_all (SELECT)
+realtime_messages_policy_true,realtime,messages,realtime_receive_all,realtime_receive_all (SELECT)
+realtime_messages_policy_true,realtime,messages,realtime_send_all,realtime_send_all (INSERT)
 rls_disabled,public,spatial_ref_sys,,owned by extension pg_trgm
 rls_disabled,public,todos,,
 secret_column_exposed,public,user_api_keys,,openai_api_key

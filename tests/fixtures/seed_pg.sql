@@ -1,5 +1,6 @@
 -- Seed fixture for PostgreSQL 15+ CI verification of src/supabase_rls_check/sql/check.sql.
--- Simulates Supabase roles, Auth, and storage.buckets/objects; exercises all 17 catalog rules (including an extension-owned table)
+-- Simulates Supabase roles, Auth, Storage and Realtime; exercises 20 catalog rules.
+-- seed_realtime_no_policy.sql separately covers the mutually exclusive no-policy rule.
 -- alongside hardened negative-control objects and mixed policy expressions.
 
 BEGIN;
@@ -312,5 +313,57 @@ CREATE TABLE public.spatial_ref_sys (
   srtext text
 );
 ALTER EXTENSION pg_trgm ADD TABLE public.spatial_ref_sys;
+
+-- Realtime stubs are only created when absent (plain PostgreSQL in CI).
+CREATE SCHEMA IF NOT EXISTS realtime;
+DO $$
+BEGIN
+  IF to_regclass('realtime.messages') IS NULL THEN
+    CREATE TABLE realtime.messages (id bigint, topic text, extension text);
+  END IF;
+END
+$$;
+ALTER TABLE realtime.messages ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY realtime_receive_all ON realtime.messages FOR SELECT TO authenticated
+  USING (true);
+CREATE POLICY realtime_send_all ON realtime.messages FOR INSERT TO anon
+  WITH CHECK ((true));
+CREATE POLICY realtime_public_all ON realtime.messages FOR SELECT TO PUBLIC
+  USING (true);
+-- An unrelated role must not trigger realtime_messages_policy_true.
+CREATE POLICY realtime_admin_all ON realtime.messages FOR SELECT TO postgres
+  USING (true);
+-- MFA opt-in: a permissive aal2 policy does not constrain other permissive grants.
+CREATE TABLE public.billing_settings (user_id uuid);
+ALTER TABLE public.billing_settings ENABLE ROW LEVEL SECURITY;
+COMMENT ON TABLE public.billing_settings IS 'MFA: administrative settings';
+CREATE POLICY billing_owner ON public.billing_settings FOR ALL TO authenticated
+  USING (user_id = (SELECT auth.uid()));
+CREATE POLICY billing_aal2_permissive ON public.billing_settings FOR SELECT TO authenticated
+  USING ((SELECT auth.jwt()->>'aal') = 'aal2');
+
+-- Both name conventions opt in without a comment.
+CREATE TABLE public.mfa_preferences (user_id uuid);
+ALTER TABLE public.mfa_preferences ENABLE ROW LEVEL SECURITY;
+CREATE TABLE public.settings_mfa (user_id uuid);
+ALTER TABLE public.settings_mfa ENABLE ROW LEVEL SECURITY;
+
+-- Restrictive USING and WITH CHECK each suppress the MFA heuristic.
+CREATE TABLE public.mfa_hardened (user_id uuid);
+ALTER TABLE public.mfa_hardened ENABLE ROW LEVEL SECURITY;
+CREATE POLICY hardened_owner ON public.mfa_hardened FOR ALL TO authenticated
+  USING (user_id = (SELECT auth.uid()));
+CREATE POLICY hardened_aal2 ON public.mfa_hardened AS RESTRICTIVE FOR ALL TO authenticated
+  USING ((SELECT auth.jwt ( )->>'aal') = 'aal2')
+  WITH CHECK ((SELECT auth.jwt ( )->>'aal') = 'aal2');
+CREATE TABLE public.mfa_insert_only (user_id uuid);
+ALTER TABLE public.mfa_insert_only ENABLE ROW LEVEL SECURITY;
+CREATE POLICY insert_aal2 ON public.mfa_insert_only AS RESTRICTIVE FOR INSERT TO authenticated
+  WITH CHECK ((SELECT auth.jwt()->>'aal') = 'AAL2');
+-- Token boundaries: neither a substring comment nor an embedded name opts in.
+CREATE TABLE public.amfa_settings (user_id uuid);
+ALTER TABLE public.amfa_settings ENABLE ROW LEVEL SECURITY;
+COMMENT ON TABLE public.amfa_settings IS 'notmfa mfactor';
 
 COMMIT;

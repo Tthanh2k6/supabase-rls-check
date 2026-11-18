@@ -96,6 +96,9 @@ jobs:
               ("definer_trusts_id_arg", "public", "get_user_orders(p_user_id uuid)", "", "p_user_id"),
               ("matview_api_exposed", "public", "auth_snapshot", "", ""),
               ("matview_api_exposed", "public", "sales_rollup", "", ""),
+              ("mfa_table_without_aal2", "public", "billing_settings", "", "table comment tag 'mfa'"),
+              ("mfa_table_without_aal2", "public", "mfa_preferences", "", "table name matches pattern 'mfa_*'"),
+              ("mfa_table_without_aal2", "public", "settings_mfa", "", "table name matches pattern '*_mfa'"),
               ("policy_any_authenticated", "public", "posts", "any_signed_in_role", ""),
               ("policy_any_authenticated", "public", "posts", "any_signed_in_uid", ""),
               ("policy_auth_per_row", "public", "notes", "mixed_auth_calls", ""),
@@ -113,6 +116,9 @@ jobs:
               ("public_bucket", "storage", "documents", "", ""),
               ("public_bucket_listable", "storage", "avatars", "public_list_avatars", ""),
               ("public_extension", "public", "pg_trgm", "", ""),
+              ("realtime_messages_policy_true", "realtime", "messages", "realtime_public_all", "realtime_public_all (SELECT)"),
+              ("realtime_messages_policy_true", "realtime", "messages", "realtime_receive_all", "realtime_receive_all (SELECT)"),
+              ("realtime_messages_policy_true", "realtime", "messages", "realtime_send_all", "realtime_send_all (INSERT)"),
               ("rls_disabled", "public", "spatial_ref_sys", "", "owned by extension pg_trgm"),
               ("rls_disabled", "public", "todos", "", ""),
               ("secret_column_exposed", "public", "user_api_keys", "", "openai_api_key"),
@@ -131,7 +137,44 @@ jobs:
           test -f /tmp/report_out/report.md
           test -f /tmp/report_out/fix.sql
 
-      - name: Check catalogs without auth schema or auth.users
+      - name: Test Realtime and MFA expression edge cases on PostgreSQL
+        env:
+          RLS_CHECK_TEST_DATABASE: supabase_check
+          PGHOST: 127.0.0.1
+          PGUSER: postgres
+        run: python -m pytest -q tests/test_catalog_070.py
+
+      - name: Check Realtime with no policies and role/RLS controls
+        run: |
+          psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE supabase_no_realtime_policy'
+          psql -h 127.0.0.1 -U postgres -d supabase_no_realtime_policy -v ON_ERROR_STOP=1 -f tests/fixtures/seed_realtime_no_policy.sql
+          PGOPTIONS='-c default_transaction_read_only=on' psql -h 127.0.0.1 -U postgres -d supabase_no_realtime_policy -v ON_ERROR_STOP=1 --csv -f src/supabase_rls_check/sql/check.sql > /tmp/no_policy_findings.csv
+          psql -h 127.0.0.1 -U postgres -d supabase_no_realtime_policy -v ON_ERROR_STOP=1 -c 'CREATE POLICY anon_only ON realtime.messages FOR SELECT TO anon USING (false)'
+          PGOPTIONS='-c default_transaction_read_only=on' psql -h 127.0.0.1 -U postgres -d supabase_no_realtime_policy -v ON_ERROR_STOP=1 --csv -f src/supabase_rls_check/sql/check.sql > /tmp/anon_only_findings.csv
+          psql -h 127.0.0.1 -U postgres -d supabase_no_realtime_policy -v ON_ERROR_STOP=1 -c 'CREATE POLICY public_control ON realtime.messages FOR SELECT TO PUBLIC USING (false)'
+          PGOPTIONS='-c default_transaction_read_only=on' psql -h 127.0.0.1 -U postgres -d supabase_no_realtime_policy -v ON_ERROR_STOP=1 --csv -f src/supabase_rls_check/sql/check.sql > /tmp/public_control_findings.csv
+          psql -h 127.0.0.1 -U postgres -d supabase_no_realtime_policy -v ON_ERROR_STOP=1 -c 'DROP POLICY public_control ON realtime.messages; ALTER TABLE realtime.messages DISABLE ROW LEVEL SECURITY'
+          PGOPTIONS='-c default_transaction_read_only=on' psql -h 127.0.0.1 -U postgres -d supabase_no_realtime_policy -v ON_ERROR_STOP=1 --csv -f src/supabase_rls_check/sql/check.sql > /tmp/rls_off_findings.csv
+          psql -h 127.0.0.1 -U postgres -d supabase_no_realtime_policy -v ON_ERROR_STOP=1 -c 'DROP TABLE realtime.messages'
+          PGOPTIONS='-c default_transaction_read_only=on' psql -h 127.0.0.1 -U postgres -d supabase_no_realtime_policy -v ON_ERROR_STOP=1 --csv -f src/supabase_rls_check/sql/check.sql > /tmp/no_messages_findings.csv
+          python - <<'PY'
+          import csv
+          from pathlib import Path
+
+          def rows(path):
+              with Path(path).open(encoding='utf-8', newline='') as stream:
+                  reader = csv.DictReader(stream)
+                  assert reader.fieldnames == ['rule', 'schema_name', 'object_name', 'policy_name', 'basis']
+                  return list(reader)
+
+          expected = rows('tests/fixtures/realtime_no_policy.csv')
+          assert rows('/tmp/no_policy_findings.csv') == expected
+          assert rows('/tmp/anon_only_findings.csv') == expected
+          for name in ('public_control', 'rls_off', 'no_messages'):
+              assert rows(f'/tmp/{name}_findings.csv') == [], name
+          PY
+
+      - name: Check catalogs without auth or realtime schemas or auth.users
         run: |
           psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE supabase_no_auth'
           psql -h 127.0.0.1 -U postgres -d supabase_no_auth -v ON_ERROR_STOP=1 -c 'CREATE SCHEMA storage; CREATE TABLE storage.buckets (id text, name text, public boolean)'
