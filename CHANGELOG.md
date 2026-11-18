@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- On Windows, `explain --lang vi` (and any Vietnamese output) crashed with `UnicodeEncodeError` when stdout was redirected to a file or pipe, because Python used the cp1252 code page. The CLI now writes UTF-8.
+
 ## [0.7.0] - 2026-11-18
 
 ### Added

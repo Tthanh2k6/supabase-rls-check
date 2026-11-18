@@ -140,8 +140,20 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _utf8_stdio() -> None:
+    """Write UTF-8 even when Windows redirects stdout to a file or pipe (cp1252 cannot encode Vietnamese)."""
+    for stream in (sys.stdout, sys.stderr):
+        encoding = (getattr(stream, 'encoding', None) or '').lower().replace('-', '')
+        if encoding != 'utf8' and hasattr(stream, 'reconfigure'):
+            try:
+                stream.reconfigure(encoding='utf-8')
+            except (ValueError, OSError):
+                pass
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI entry point returning POSIX exit code."""
+    _utf8_stdio()
     parser = build_parser()
     args = parser.parse_args(argv)
 
