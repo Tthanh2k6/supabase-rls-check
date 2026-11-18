@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-18
+
+### Added
+- Two catalog checks for Realtime private-channel authorization, based on supabase/realtime#1111 and supabase/realtime#2513: `realtime_messages_no_policy` (Medium) and `realtime_messages_policy_true` (High). Missing Realtime objects are skipped.
+- `mfa_table_without_aal2` (Medium, review needed), based on supabase/auth#2091 and the Supabase MFA guide. Tables in `public` opt in with an `mfa` comment tag or `mfa_*` / `*_mfa` name; the check looks for a RESTRICTIVE policy expression containing `auth.jwt()` and `aal2`. A permissive check alone can be bypassed by another permissive grant. Matching text does not prove enforcement or full role/command coverage.
+- English and Vietnamese titles, remedies and explanations for all three rules, report integration and comment-only `fix.sql` guidance. Catalog coverage now totals 20 rules, with 38 main fixture findings and a separate no-policy fixture, plus PostgreSQL CI cases for expression and role boundaries.
+- Read-only MCP `list_rules()` backed by the shared rule table. Existing `analyze_sql_export` automatically accepts the new rule IDs without changes to its analysis logic.
+
 ## [0.6.3] - 2026-11-13
 
 ### Changed

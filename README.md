@@ -4,7 +4,7 @@
 
 [![PyPI](https://img.shields.io/pypi/v/supabase-rls-check)](https://pypi.org/project/supabase-rls-check/)
 
-A command-line tool that reads PostgreSQL catalog metadata from a Supabase project and flags Row Level Security (RLS) mistakes: tables without RLS, `USING (true)` policies, `SECURITY DEFINER` functions callable by `anon`, public Storage buckets and 13 other patterns. It also scans a local app folder for leaked `service_role` keys. It never needs a database password or a `service_role` key, and it never reads table rows. It also ships as an MCP server and a GitHub Action. Python 3.11+, PostgreSQL 15+.
+A command-line tool that reads PostgreSQL catalog metadata from a Supabase project and flags Row Level Security (RLS) mistakes: tables without RLS, `USING (true)` policies, `SECURITY DEFINER` functions callable by `anon`, public Storage buckets and 16 other patterns. It also scans a local app folder for leaked `service_role` keys. It never needs a database password or a `service_role` key, and it never reads table rows. It also ships as an MCP server and a GitHub Action. Python 3.11+, PostgreSQL 15+.
 
 It is for people who ship a Supabase app with the `anon` key in the browser and want to check what that key can reach. It is a review aid, not a penetration test (see Limitations).
 
@@ -123,7 +123,7 @@ supabase-rls-check explain definer_anon_exec
 supabase-rls-check mcp        # needs the [mcp] extra; stdio transport
 ```
 
-The MCP server has four local, read-only tools: `analyze_sql_export(path)`, `explain_rule(rule)`, `scan_public_env(path)` and `diff_results(old_path, new_path)`. `probe` is not exposed, so an AI client never handles your API key or makes HTTP requests through this tool.
+The MCP server has five local, read-only tools: `analyze_sql_export(path)`, `explain_rule(rule)`, `scan_public_env(path)`, `diff_results(old_path, new_path)` and `list_rules()`. Rule listing and export analysis use the same rule table, including the Realtime and MFA checks. `probe` is not exposed, so an AI client never handles your API key or makes HTTP requests through this tool.
 
 ### Compare two runs with `diff`
 
@@ -203,7 +203,7 @@ jobs:
 
 ## Rules
 
-`check.sql` has 17 rules. It queries PostgreSQL 15+ system catalogs and `storage.buckets` in one read-only query. The table also lists two `scan-env` rules that read local files.
+`check.sql` has 20 rules. It queries PostgreSQL 15+ system catalogs and `storage.buckets` in one read-only query. The table also lists two `scan-env` rules that read local files.
 
 | Rule ID | Severity | What it flags |
 | --- | --- | --- |
@@ -225,9 +225,14 @@ jobs:
 | `secret_column_exposed` | Medium | Column in `public` named or ending in `api_key`, `apikey`, `secret`, `client_secret`, `access_token`, `refresh_token`, `private_key` or `password` that `anon` or `authenticated` can `SELECT` (`basis` = column name). RLS limits rows, but the client still receives the plaintext value. |
 | `definer_trusts_id_arg` | Medium | `SECURITY DEFINER` function in `public`, executable by `anon` or `authenticated`, with an argument ending in `_id` or equal to `uid`, `user`, `org` or `tenant`, whose source never references `auth.uid()` or `auth.jwt()` (`basis` = argument names). Needs review: it misses functions that delegate the check to a helper and may flag ones that validate the ID against a membership table. |
 | `db_url_in_client_code` | Critical | `scan-env`: a `postgres(ql)://user:password@` URL in a client-bundled file. Placeholders such as `${DB_PASSWORD}` are ignored. |
+| `realtime_messages_no_policy` | Medium | `realtime.messages` has RLS enabled but no policy explicitly targeting `authenticated` or `PUBLIC`; private channel joins lack authorization. Skips missing Realtime objects; inherited roles are not resolved. |
+| `realtime_messages_policy_true` | High | A policy on `realtime.messages` for `anon`, `authenticated` or `PUBLIC` has constant `true` in `USING` or `WITH CHECK` (`basis` = policy name and command). Review effective grants and restrictive policies before inferring access to every private topic. |
+| `mfa_table_without_aal2` | Medium | Review needed: a table in `public` tagged `mfa` in its comment or named `mfa_*` / `*_mfa` lacks a `RESTRICTIVE` policy expression containing `auth.jwt()` and `aal2` (case-insensitive, whitespace tolerant). `basis` identifies the tag or name convention. This does not verify command/role coverage or prove MFA enforcement. |
 | `agent_config_secret` | Critical | `scan-env`: an `sb_secret_` key, `service_role` JWT or Postgres URL with a password in an agent or MCP config file. |
 
-`policy_true_writable`, `policy_user_metadata`, `policy_auth_per_row`, `auth_users_exposed`, `matview_api_exposed`, `public_bucket_listable`, `policy_any_authenticated`, `secret_column_exposed` and `definer_trusts_id_arg` add only commented guidance to `fix.sql`, never DDL. To make `sensitive_anon_policy` independent of table names, tag tables with `COMMENT ON TABLE public.x IS 'pii'`.
+`policy_true_writable`, `policy_user_metadata`, `policy_auth_per_row`, `auth_users_exposed`, `matview_api_exposed`, `public_bucket_listable`, `policy_any_authenticated`, `secret_column_exposed`, `definer_trusts_id_arg` and all three Realtime/MFA rules add only commented guidance to `fix.sql`, never DDL. To make `sensitive_anon_policy` independent of table names, tag tables with `COMMENT ON TABLE public.x IS 'pii'`.
+
+**Realtime and MFA:** Private Broadcast/Presence channels use `realtime.messages` policies: `SELECT` authorizes receiving and `INSERT` authorizes sending; scope them by `realtime.topic()` and membership ([Realtime authorization](https://supabase.com/docs/guides/realtime/authorization)). To opt a table into MFA review, use `COMMENT ON TABLE public.x IS 'mfa'` or the name conventions above. An `aal2` check in a `PERMISSIVE` policy can be bypassed by another permissive grant, so the check looks for `RESTRICTIVE` ([MFA guide](https://supabase.com/docs/guides/auth/auth-mfa)). These are catalog heuristics; test channel access and both `aal1`/`aal2` sessions separately.
 
 Some rules overlap on purpose. `policy_true` fires on the same policy as `policy_true_writable`. A materialized view over `auth.users` produces both `auth_users_exposed` and `matview_api_exposed`. A regular view over `auth.users` can also trigger `view_not_invoker`. A listable public bucket produces both `public_bucket` and `public_bucket_listable`.
 
@@ -235,8 +240,8 @@ Policy checks are heuristics over PostgreSQL's deparsed SQL. The per-row auth ch
 
 ## How it is tested
 
-- `pytest` runs 133 tests offline (`python -m pytest -q`; an autouse fixture blocks real network requests). They cover consent-flag enforcement, GET/HEAD-only probing without redirects, response size limits, row values and keys never written to disk, `service_role` JWT detection, `scan-env` (agent/MCP config, React Native and Expo files, masked output), `diff` including `basis` changes and severity gating, HTML and SQL escaping, identifier quoting in `fix.sql`, English and Vietnamese output, all 17 catalog rules, and the MCP tool list (no `probe`).
-- GitHub Actions runs `check.sql` on a real PostgreSQL 15. `tests/fixtures/seed_pg.sql` plants issues for all 17 rules next to safe controls, and CI compares the 32 expected findings (with `basis`) exactly, failing on any extra or missing row. The fixture includes both JWT sources, extension-owned tables, column-level `REVOKE`s and `pii` comments, and CI also runs the query without an `auth` schema or `auth.users` table.
+- `pytest` runs the offline suite (`python -m pytest -q`; probe tests block real HTTP requests). It covers consent, probing limits and redaction, `scan-env`, `diff`, escaping, English/Vietnamese output, exports for all 20 catalog rules, and MCP tools (including `list_rules`, excluding `probe`). Live PostgreSQL tests skip unless `RLS_CHECK_TEST_DATABASE` is explicitly set.
+- GitHub Actions runs `check.sql` on PostgreSQL 15. `tests/fixtures/seed_pg.sql` plants issues for 19 rules next to controls, and CI compares 38 expected findings (with `basis`) exactly. The mutually exclusive no-policy case uses `seed_realtime_no_policy.sql` and `realtime_no_policy.csv`. CI also checks missing Auth/Realtime objects, anonymous-only and PUBLIC policies, disabled RLS, both policy expressions and restrictive MFA checks.
 - A second CI job, `diff-e2e` (also runnable as `scripts/e2e_diff.py` with `psql` available), applies a small schema, builds a report, reruns unchanged (`diff --fail-on-new high` exits `0`), adds `COMMENT ON TABLE ... IS 'pii'`, reruns, and checks that the same command now exits non-zero on `sensitive_anon_policy`.
 
 ## Safety rules
