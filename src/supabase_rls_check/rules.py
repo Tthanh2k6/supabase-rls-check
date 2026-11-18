@@ -129,6 +129,27 @@ RULES: dict[str, tuple[str, str, str, str, str]] = {
         'Hàm definer nhận tham số ID nhưng không kiểm tra auth.uid() hoặc auth.jwt() (cần rà soát)',
         'Cần rà soát: xác minh hàm kiểm tra danh tính người gọi bằng auth.uid() hoặc auth.jwt() thay vì tin tưởng tham số ID do client truyền vào, hoặc thu hồi quyền EXECUTE của anon/authenticated.',
     ),
+    'realtime_messages_no_policy': (
+        'Medium',
+        'Realtime messages has no authenticated policy',
+        'Add SELECT (receive) and INSERT (send) policies on realtime.messages that check realtime.topic() against a membership table and auth.uid().',
+        'Realtime messages chưa có policy cho người dùng đã xác thực',
+        'Thêm policy SELECT (nhận) và INSERT (gửi) trên realtime.messages, đối chiếu realtime.topic() với bảng thành viên và auth.uid().',
+    ),
+    'realtime_messages_policy_true': (
+        'High',
+        'Unconditional Realtime authorization policy',
+        'Replace the broad policy with topic membership checks using realtime.topic() and auth.uid(); review roles, commands and restrictive policies.',
+        'Policy phân quyền Realtime có điều kiện luôn đúng',
+        'Thay policy quá rộng bằng kiểm tra thành viên theo realtime.topic() và auth.uid(); rà role, lệnh và các policy RESTRICTIVE.',
+    ),
+    'mfa_table_without_aal2': (
+        'Medium',
+        'MFA-marked table lacks a restrictive aal2 policy (review needed)',
+        'Review needed: keep ownership policies and add an AS RESTRICTIVE policy TO authenticated with USING and WITH CHECK testing (select auth.jwt()->>\'aal\') = \'aal2\'; enable RLS.',
+        'Bảng đánh dấu MFA thiếu policy RESTRICTIVE kiểm tra aal2 (cần rà soát)',
+        'Cần rà soát: giữ policy chủ sở hữu, thêm policy AS RESTRICTIVE TO authenticated với USING và WITH CHECK kiểm tra (select auth.jwt()->>\'aal\') = \'aal2\'; bật RLS.',
+    ),
     'anon_readable': (
         'High',
         'Rows readable without login',
@@ -198,6 +219,9 @@ SQL_RULES: tuple[str, ...] = (
     'policy_any_authenticated',
     'secret_column_exposed',
     'definer_trusts_id_arg',
+    'realtime_messages_no_policy',
+    'realtime_messages_policy_true',
+    'mfa_table_without_aal2',
 )
 
 ENV_RULES: tuple[str, ...] = (
@@ -549,6 +573,119 @@ RULE_GUIDES: dict[str, dict[str, str]] = {
             '-- REVOKE EXECUTE ON FUNCTION public.get_user_orders(uuid) FROM PUBLIC, anon, authenticated;'
         ),
     },
+    'realtime_messages_no_policy': {
+        'source': 'SQL catalog check (check.sql); https://supabase.com/docs/guides/realtime/authorization',
+        'why': (
+            'RLS is enabled on realtime.messages but no policy targets authenticated or PUBLIC. '
+            'Private Broadcast/Presence channels use SELECT to authorize receiving and INSERT to '
+            'authorize sending. With no applicable policy, authenticated private channel joins fail '
+            'and can report CHANNEL_ERROR.'
+        ),
+        'why_vi': (
+            'realtime.messages đã bật RLS nhưng không có policy cho authenticated hoặc PUBLIC. '
+            'Kênh Broadcast/Presence riêng tư dùng SELECT để cho phép nhận và INSERT để cho phép gửi. '
+            'Khi không có policy áp dụng, người dùng đã xác thực không thể tham gia kênh riêng tư '
+            'và có thể nhận CHANNEL_ERROR.'
+        ),
+        'caveat': (
+            'Only explicit authenticated/PUBLIC role targets are counted; inherited roles are not resolved. '
+            'Any such policy suppresses this finding, even if it denies access or covers the wrong command. '
+            'Missing realtime schemas/tables are skipped. This does not inspect Realtime settings or '
+            'prove successful channel joins; Postgres Changes uses the source tables\' RLS instead.'
+        ),
+        'caveat_vi': (
+            'Chỉ đếm policy ghi rõ authenticated/PUBLIC, không xét role kế thừa. Bất kỳ policy như vậy '
+            'đều làm cảnh báo biến mất, dù từ chối truy cập hoặc dùng sai lệnh. Bỏ qua nếu thiếu schema '
+            'realtime hoặc bảng messages. Không kiểm tra cấu hình Realtime hay chứng minh việc tham gia '
+            'kênh thành công; Postgres Changes dùng RLS của bảng nguồn.'
+        ),
+        'example': (
+            '-- Adapt the membership table/columns and protect membership writes.\n'
+            'CREATE POLICY "member_receive" ON realtime.messages\n'
+            '  FOR SELECT TO authenticated USING (EXISTS (\n'
+            '    SELECT 1 FROM public.chat_room_members AS member\n'
+            '    WHERE member.user_id = (SELECT auth.uid())\n'
+            '      AND member.topic = (SELECT realtime.topic())\n'
+            '  ));\n'
+            'CREATE POLICY "member_send" ON realtime.messages\n'
+            '  FOR INSERT TO authenticated WITH CHECK (EXISTS (\n'
+            '    SELECT 1 FROM public.chat_room_members AS member\n'
+            '    WHERE member.user_id = (SELECT auth.uid())\n'
+            '      AND member.topic = (SELECT realtime.topic())\n'
+            '  ));'
+        ),
+    },
+    'realtime_messages_policy_true': {
+        'source': 'SQL catalog check (check.sql); https://supabase.com/docs/guides/realtime/authorization',
+        'why': (
+            'A realtime.messages policy for anon, authenticated or PUBLIC has a constant true USING '
+            'or WITH CHECK expression. An unconditional permissive SELECT/INSERT grant can let any '
+            'signed-in user, or anyone with the anon key when anon is included, receive or broadcast '
+            'on every private topic. The basis records the policy name and command.'
+        ),
+        'why_vi': (
+            'Policy trên realtime.messages cho anon, authenticated hoặc PUBLIC có USING hoặc WITH CHECK '
+            'luôn đúng. Policy PERMISSIVE SELECT/INSERT như vậy có thể cho mọi người đã đăng nhập, '
+            'hoặc bất kỳ ai có anon key khi có role anon, nhận hoặc gửi trên mọi chủ đề riêng tư. '
+            'Cơ sở cảnh báo ghi tên policy và lệnh.'
+        ),
+        'caveat': (
+            'Reuses policy_true matching: only literal true with optional whitespace/parentheses. '
+            'Grants, RLS state, other predicates and restrictive policies can limit effective access. '
+            'A restrictive true policy alone grants nothing; UPDATE/DELETE do not establish receive/send '
+            'authorization. This is a catalog signal, not a live channel access test.'
+        ),
+        'caveat_vi': (
+            'Dùng cách dò của policy_true: chỉ nhận true với khoảng trắng/dấu ngoặc. Quyền truy cập, '
+            'trạng thái RLS, điều kiện khác và policy RESTRICTIVE có thể giới hạn quyền thực tế. '
+            'Policy RESTRICTIVE true riêng lẻ không cấp quyền; UPDATE/DELETE không cấp quyền nhận/gửi. '
+            'Đây là cảnh báo từ catalog, không phải phép thử truy cập kênh trực tiếp.'
+        ),
+        'example': (
+            '-- Review and replace the broad policy; keep membership-bound SELECT/INSERT policies.\n'
+            '-- DROP POLICY "your_broad_policy" ON realtime.messages;\n'
+            '-- Check both member.user_id = (SELECT auth.uid()) and\n'
+            '-- member.topic = (SELECT realtime.topic()) against public.chat_room_members.'
+        ),
+    },
+    'mfa_table_without_aal2': {
+        'source': 'SQL catalog check (check.sql); https://supabase.com/docs/guides/auth/auth-mfa',
+        'why': (
+            'Review needed: a public table opted into MFA checks through the mfa comment tag or an '
+            'mfa_* / *_mfa name has no RESTRICTIVE policy expression containing auth.jwt() and aal2. '
+            'A PERMISSIVE policy checking aal2 does not enforce MFA if another permissive policy '
+            'grants access, because permissive policies combine with OR. A restrictive policy adds '
+            'an AND condition to existing ownership grants.'
+        ),
+        'why_vi': (
+            'Cần rà soát: bảng public được đánh dấu bằng thẻ mfa trong comment hoặc tên mfa_* / *_mfa '
+            'thiếu biểu thức policy RESTRICTIVE chứa auth.jwt() và aal2. Policy PERMISSIVE kiểm tra '
+            'aal2 không bắt buộc MFA nếu policy PERMISSIVE khác cấp quyền, vì các policy này kết hợp '
+            'bằng OR. Policy RESTRICTIVE thêm điều kiện AND vào quyền theo chủ sở hữu hiện có.'
+        ),
+        'caveat': (
+            'Opt-in, case-insensitive text heuristic only; unmarked tables are outside coverage. '
+            'It does not prove the expression enforces aal2, resolve helper functions, or verify '
+            'policy command/role coverage, RLS state or MFA enrollment. A matching policy on one '
+            'command suppresses the finding even if others remain unprotected. Review USING and '
+            'WITH CHECK and test both aal1 and aal2 sessions.'
+        ),
+        'caveat_vi': (
+            'Chỉ dò văn bản không phân biệt hoa thường trên bảng đã đánh dấu. Không chứng minh biểu '
+            'thức bắt buộc aal2, không xét hàm hỗ trợ, phạm vi lệnh/role, trạng thái RLS hay đăng ký MFA. '
+            'Một policy khớp ở một lệnh cũng làm cảnh báo biến mất dù lệnh khác chưa được bảo vệ. '
+            'Rà cả USING và WITH CHECK, thử phiên aal1 và aal2.'
+        ),
+        'example': (
+            '-- Adapted restrictive-policy pattern from the Supabase MFA guide linked above.\n'
+            '-- Keep the existing permissive ownership policies.\n'
+            'ALTER TABLE public.your_table ENABLE ROW LEVEL SECURITY;\n'
+            'CREATE POLICY "require_second_factor" ON public.your_table\n'
+            '  AS RESTRICTIVE FOR ALL TO authenticated\n'
+            "  USING ((SELECT auth.jwt()->>'aal') = 'aal2')\n"
+            "  WITH CHECK ((SELECT auth.jwt()->>'aal') = 'aal2');"
+        ),
+    },
     'anon_readable': {
         'source': 'Anonymous HTTP probe (probe)',
         'why': (
@@ -816,8 +953,8 @@ def explain_rule(rule: str, lang: str = 'en') -> str:
             f'Mức độ / Severity: {vi_sev} ({severity})\n'
             f'Tiêu đề / Title: {vi_title}\n'
             f'Nguồn / Source: {guide["source"]}\n\n'
-            f'Giải thích (EN):\n{guide["why"]}\n\n'
-            f'Lưu ý ngữ cảnh:\n{guide["caveat"]}\n\n'
+            f'{"Giải thích" if "why_vi" in guide else "Giải thích (EN)"}:\n{guide.get("why_vi", guide["why"])}\n\n'
+            f'Lưu ý ngữ cảnh:\n{guide.get("caveat_vi", guide["caveat"])}\n\n'
             f'Cách sửa:\n{vi_remedy}\n\n'
             f'Ví dụ minh họa (rà soát trên staging trước khi áp dụng):\n{guide["example"]}'
         )

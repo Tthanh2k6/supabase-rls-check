@@ -18,22 +18,24 @@ MCP_INSTALL_HINT = (
     'Optional dependency "mcp" is not installed. '
     'Install it with: pip install "supabase-rls-check[mcp]"'
 )
-MCP_TOOL_NAMES: tuple[str, str, str, str] = (
+MCP_TOOL_NAMES: tuple[str, ...] = (
     'analyze_sql_export',
     'explain_rule',
     'scan_public_env',
     'diff_results',
+    'list_rules',
 )
 MCP_TOOL_TITLES: dict[str, str] = {
     'analyze_sql_export': 'Analyze SQL export',
     'explain_rule': 'Explain rule',
     'scan_public_env': 'Scan public env',
     'diff_results': 'Diff results',
+    'list_rules': 'List rules',
 }
 
 
 def _tool_annotations(title: str) -> Any:
-    """All four tools only read local input: read-only, non-destructive, idempotent, closed-world."""
+    """Tools only read local input or static rule metadata."""
     hints = dict(
         title=title,
         readOnlyHint=True,
@@ -94,6 +96,14 @@ def analyze_sql_export(path: str) -> dict[str, Any]:
             'exploitation or write access, and zero findings does not certify safety.'
         ),
     }
+
+
+def list_rules() -> list[dict[str, str]]:
+    """List every supported rule with its severity, English title and remediation."""
+    return [
+        {'rule': rule, 'severity': entry[0], 'title': entry[1], 'remediation': entry[2]}
+        for rule, entry in RULES.items()
+    ]
 
 
 def explain_rule(rule: str) -> str:
@@ -204,7 +214,7 @@ def create_mcp_server(fastmcp_cls: Any = None) -> Any:
             except ImportError as exc:
                 raise RuntimeError(MCP_INSTALL_HINT) from exc
     server = fastmcp_cls('supabase-rls-check')
-    for fn in (analyze_sql_export, explain_rule, scan_public_env, diff_results):
+    for fn in (analyze_sql_export, explain_rule, scan_public_env, diff_results, list_rules):
         title = MCP_TOOL_TITLES[fn.__name__]
         server.add_tool(fn, title=title, annotations=_tool_annotations(title))
     return server

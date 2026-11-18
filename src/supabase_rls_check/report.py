@@ -90,6 +90,9 @@ def fix_sql(findings: Sequence[dict[str, Any]], lang: str = 'en') -> str:
             'policy_any_authenticated',
             'secret_column_exposed',
             'definer_trusts_id_arg',
+            'realtime_messages_no_policy',
+            'realtime_messages_policy_true',
+            'mfa_table_without_aal2',
         ):
             target = clean(f['schema_name']) + '.' + clean(f['object_name'])
             policy = ': ' + clean(f['policy_name']) if f['policy_name'] else ''

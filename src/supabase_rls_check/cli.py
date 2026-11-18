@@ -134,7 +134,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         'mcp',
         parents=[consent],
-        help='Run the optional stdio MCP server (analyze_sql_export, explain_rule, scan_public_env, and diff_results; local files only)',
+        help='Run the optional stdio MCP server (analyze_sql_export, explain_rule, scan_public_env, diff_results, and list_rules; local only)',
     )
 
     return parser

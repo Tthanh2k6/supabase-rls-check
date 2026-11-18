@@ -9,6 +9,9 @@ WITH policy_expressions AS (
   JOIN pg_catalog.pg_class c ON c.relnamespace = n.oid AND c.relname = p.tablename
   CROSS JOIN LATERAL (VALUES (p.qual), (p.with_check)) e(expression)
   WHERE p.schemaname = 'public' AND e.expression IS NOT NULL
+), realtime_policies AS (
+  SELECT * FROM pg_catalog.pg_policies
+  WHERE schemaname = 'realtime' AND tablename = 'messages'
 ), findings AS (
   SELECT 'rls_disabled'::text AS rule, n.nspname::text AS schema_name,
          c.relname::text AS object_name, ''::text AS policy_name,
@@ -228,6 +231,48 @@ WITH policy_expressions AS (
       SELECT 1 FROM pg_catalog.pg_roles r
       WHERE r.rolname IN ('anon', 'authenticated')
         AND pg_catalog.has_function_privilege(r.oid, p.oid, 'EXECUTE')
+    )
+  UNION ALL
+  SELECT 'realtime_messages_no_policy', n.nspname::text, c.relname::text, '',
+         'no policy on realtime.messages'
+  FROM pg_catalog.pg_class c
+  JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+  WHERE n.nspname = 'realtime' AND c.relname = 'messages'
+    AND c.relkind IN ('r', 'p') AND c.relrowsecurity
+    AND NOT EXISTS (
+      SELECT 1 FROM realtime_policies p
+      WHERE p.roles && ARRAY['authenticated', 'public']::name[]
+    )
+  UNION ALL
+  SELECT 'realtime_messages_policy_true', schemaname::text, tablename::text, policyname::text,
+         policyname::text || ' (' || cmd || ')'
+  FROM realtime_policies
+  WHERE roles && ARRAY['anon', 'authenticated', 'public']::name[]
+    AND (
+      regexp_replace(coalesce(qual, ''), '[()[:space:]]', '', 'g') = 'true'
+      OR regexp_replace(coalesce(with_check, ''), '[()[:space:]]', '', 'g') = 'true'
+    )
+  UNION ALL
+  SELECT 'mfa_table_without_aal2', n.nspname::text, c.relname::text, '',
+         CASE
+           WHEN pg_catalog.obj_description(c.oid, 'pg_class') ~* '\mmfa\M'
+             THEN 'table comment tag ''mfa'''
+           WHEN c.relname ~* '^mfa_'
+             THEN 'table name matches pattern ''mfa_*'''
+           ELSE 'table name matches pattern ''*_mfa'''
+         END
+  FROM pg_catalog.pg_class c
+  JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+  WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p')
+    AND (c.relname ~* '(^mfa_|_mfa$)'
+         OR pg_catalog.obj_description(c.oid, 'pg_class') ~* '\mmfa\M')
+    AND NOT EXISTS (
+      SELECT 1 FROM pg_catalog.pg_policies p
+      CROSS JOIN LATERAL (VALUES (p.qual), (p.with_check)) e(expression)
+      WHERE p.schemaname = n.nspname AND p.tablename = c.relname
+        AND p.permissive = 'RESTRICTIVE'
+        AND e.expression ~* '\mauth[[:space:]]*\.[[:space:]]*jwt[[:space:]]*\([[:space:]]*\)'
+        AND e.expression ~* '\maal2\M'
     )
 )
 SELECT rule, schema_name, object_name, policy_name, basis FROM findings
